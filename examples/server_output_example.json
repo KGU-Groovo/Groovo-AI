@@ -1,0 +1,170 @@
+{
+  "ready": true,
+  "score_100": 85.44355773925781,
+  "color": "green",
+  "status": "good",
+  "highlight_joints": [
+    24,
+    16,
+    1
+  ],
+  "frontend_payload": {
+    "score_100": 85.4436,
+    "color": "green",
+    "status": "good",
+    "highlight_joints": [
+      24,
+      16,
+      1
+    ],
+    "joint_errors": [
+      {
+        "joint_index": 0,
+        "error": 0.03422973304986954
+      },
+      {
+        "joint_index": 1,
+        "error": 0.03425861895084381
+      },
+      {
+        "joint_index": 2,
+        "error": 0.034160010516643524
+      },
+      {
+        "joint_index": 3,
+        "error": 0.03418572247028351
+      },
+      {
+        "joint_index": 4,
+        "error": 0.034211788326501846
+      },
+      {
+        "joint_index": 5,
+        "error": 0.0342167466878891
+      },
+      {
+        "joint_index": 6,
+        "error": 0.0342419371008873
+      },
+      {
+        "joint_index": 7,
+        "error": 0.03423774987459183
+      },
+      {
+        "joint_index": 8,
+        "error": 0.03420734778046608
+      },
+      {
+        "joint_index": 9,
+        "error": 0.034167736768722534
+      },
+      {
+        "joint_index": 10,
+        "error": 0.034235019236803055
+      },
+      {
+        "joint_index": 11,
+        "error": 0.03421661630272865
+      },
+      {
+        "joint_index": 12,
+        "error": 0.03417215496301651
+      },
+      {
+        "joint_index": 13,
+        "error": 0.0342072919011116
+      },
+      {
+        "joint_index": 14,
+        "error": 0.03423124924302101
+      },
+      {
+        "joint_index": 15,
+        "error": 0.0342230498790741
+      },
+      {
+        "joint_index": 16,
+        "error": 0.034260980784893036
+      },
+      {
+        "joint_index": 17,
+        "error": 0.034212470054626465
+      },
+      {
+        "joint_index": 18,
+        "error": 0.03415633738040924
+      },
+      {
+        "joint_index": 19,
+        "error": 0.03423075005412102
+      },
+      {
+        "joint_index": 20,
+        "error": 0.034229476004838943
+      },
+      {
+        "joint_index": 21,
+        "error": 0.03423898294568062
+      },
+      {
+        "joint_index": 22,
+        "error": 0.034226804971694946
+      },
+      {
+        "joint_index": 23,
+        "error": 0.03422096371650696
+      },
+      {
+        "joint_index": 24,
+        "error": 0.034298088401556015
+      },
+      {
+        "joint_index": 25,
+        "error": 0.03425724059343338
+      },
+      {
+        "joint_index": 26,
+        "error": 0.03418412059545517
+      },
+      {
+        "joint_index": 27,
+        "error": 0.03417371213436127
+      },
+      {
+        "joint_index": 28,
+        "error": 0.034178927540779114
+      },
+      {
+        "joint_index": 29,
+        "error": 0.03423864394426346
+      },
+      {
+        "joint_index": 30,
+        "error": 0.034210171550512314
+      },
+      {
+        "joint_index": 31,
+        "error": 0.034167759120464325
+      },
+      {
+        "joint_index": 32,
+        "error": 0.03424331545829773
+      }
+    ],
+    "top_joint_errors": [
+      {
+        "joint_index": 24,
+        "error": 0.034298088401556015
+      },
+      {
+        "joint_index": 16,
+        "error": 0.034260980784893036
+      },
+      {
+        "joint_index": 1,
+        "error": 0.03425861895084381
+      }
+    ]
+  },
+  "note": "Prototype output based on rule-based pseudo labels."
+}
