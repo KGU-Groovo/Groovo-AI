@@ -1,0 +1,115 @@
+import io
+import json
+import logging
+from typing import Any
+
+import aioboto3
+import numpy as np
+import redis.asyncio as aioredis
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# MediaPipe Pose 기준: 33 landmarks × [x, y, z]
+NUM_LANDMARKS = 33
+KEYPOINT_DIM = 3
+
+
+async def _load_from_s3(keypoint_path: str) -> np.ndarray:
+    """S3에서 .npy keypoint 파일 로드"""
+    session = aioboto3.Session(
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        region_name=settings.aws_region,
+    )
+    async with session.client("s3") as s3:
+        resp = await s3.get_object(Bucket=settings.s3_bucket_name, Key=keypoint_path)
+        body = await resp["Body"].read()
+
+    arr = np.load(io.BytesIO(body))  # shape: (num_frames, num_joints, 3)
+    return arr
+
+
+async def load_reference_keypoints(
+    redis: aioredis.Redis,
+    video_id: int,
+    keypoint_path: str,
+) -> np.ndarray:
+    """Redis 캐시 우선, 없으면 S3에서 로드 후 캐시 저장"""
+    cache_key = f"ref_kp:{video_id}"
+    cached = await redis.get(cache_key)
+
+    if cached:
+        arr = np.frombuffer(cached, dtype=np.float32)
+        # 원래 shape 복원을 위해 메타 키도 저장
+        shape_raw = await redis.get(f"{cache_key}:shape")
+        if shape_raw:
+            shape = tuple(json.loads(shape_raw))
+            return arr.reshape(shape)
+
+    logger.info("S3에서 reference keypoint 로드: %s", keypoint_path)
+    arr = await _load_from_s3(keypoint_path)
+    arr = arr.astype(np.float32)
+
+    await redis.set(cache_key, arr.tobytes(), ex=settings.redis_session_ttl)
+    await redis.set(
+        f"{cache_key}:shape", json.dumps(list(arr.shape)), ex=settings.redis_session_ttl
+    )
+    return arr
+
+
+def compute_feedback(
+    reference: np.ndarray,
+    incoming: np.ndarray,
+    frame_idx: int,
+    timestamp_ms: int | None = None,
+    fps: float = 30.0,
+) -> dict[str, Any]:
+    """
+    실시간 keypoint 비교 → 피드백 반환
+
+    reference:    (num_frames, num_joints, 3)  — 강사 영상 기준 [x, y, z]
+    incoming:     (num_joints, 3)              — 사용자의 현재 프레임 [x, y, z]
+    timestamp_ms: 재생 시작 기준 경과 시간(ms). 제공 시 프레임 드랍 보정에 사용.
+    fps:          기준 영상 FPS (세션 메타에서 주입)
+    """
+    num_frames = reference.shape[0]
+
+    # timestamp_ms가 있으면 경과 시간으로 프레임을 재계산해 드랍 보정
+    if timestamp_ms is not None:
+        frame_idx = min(int(timestamp_ms * fps / 1000), num_frames - 1)
+
+    ref_frame = reference[frame_idx % num_frames]
+
+    ref_coords = ref_frame   # (33, 3) [x, y, z]
+    inc_coords = incoming    # (33, 3) [x, y, z]
+
+    # 코사인 유사도
+    ref_flat = ref_coords.flatten()
+    inc_flat = inc_coords.flatten()
+    cos_sim = float(
+        np.dot(ref_flat, inc_flat)
+        / (np.linalg.norm(ref_flat) * np.linalg.norm(inc_flat) + 1e-8)
+    )
+
+    # 관절별 거리 오차 (정규화된 좌표 기준)
+    joint_errors = np.linalg.norm(ref_coords - inc_coords, axis=1)
+    worst_joints = np.argsort(joint_errors)[::-1][:3].tolist()
+
+    feedback_text = _score_to_message(cos_sim)
+
+    return {
+        "score": round(cos_sim, 4),
+        "feedback": feedback_text,
+        "frame_idx": frame_idx,
+        "worst_joints": worst_joints,  # 가장 틀린 관절 인덱스
+    }
+
+
+def _score_to_message(score: float) -> str:
+    if score >= settings.feedback_threshold_good:
+        return "Good!"
+    if score >= settings.feedback_threshold_bad:
+        return "조금 더 정확하게 따라해 보세요."
+    return "동작이 많이 다릅니다. 다시 시도해 보세요."
