@@ -18,7 +18,7 @@ def verify_ws_token(token: str) -> TokenPayload:
         )
         session_id: str = payload.get("session_id")
         user_id: int = payload.get("user_id")
-        if not session_id or not user_id:
+        if not session_id or user_id is None:
             raise ValueError("token payload missing fields")
         return TokenPayload(session_id=session_id, user_id=user_id)
     except JWTError as e:

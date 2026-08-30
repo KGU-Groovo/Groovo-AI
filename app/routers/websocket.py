@@ -155,4 +155,9 @@ async def _receive_one(websocket: WebSocket) -> dict | None:
     msg = await websocket.receive()
     if msg["type"] == "websocket.disconnect":
         return None
-    return json.loads(msg["text"])
+    text = msg.get("text")
+    if text is None:
+        # 바이너리 프레임은 지원하지 않음 - JSONDecodeError와 동일하게 처리해
+        # 세션을 끊지 않고 에러만 전달한다.
+        raise json.JSONDecodeError("binary frame not supported", "", 0)
+    return json.loads(text)

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from jose import jwt
 
+import app.routers.websocket as ws_module
 from app.config import settings
 from tests.conftest import make_token, reference_frame, seed_session_and_reference
 
@@ -76,6 +77,22 @@ def test_malformed_json_keeps_session_alive(client, fake_redis):
         assert "score" in resp2
 
 
+def test_binary_frame_keeps_session_alive(client, fake_redis):
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+
+        ws.send_bytes(b"\x00\x01\x02")
+        resp = ws.receive_json()
+        assert "error" in resp
+
+        ws.send_json({"frame_idx": 1, "timestamp_ms": 33, "keypoints": reference_frame(1)})
+        resp2 = ws.receive_json()
+        assert "score" in resp2
+
+
 def test_invalid_token_closes_with_4001(client, fake_redis):
     bad_token = "this-is-not-a-valid-jwt"
 
@@ -99,6 +116,20 @@ def test_unknown_session_closes_with_4002(client, fake_redis):
     with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
         msg = ws.receive_json()
         assert msg == {"error": "session not found: no-such-session"}
+
+        with pytest.raises(Exception) as exc_info:
+            ws.receive_json()
+        assert getattr(exc_info.value, "code", None) == 4002
+
+
+def test_malformed_session_data_closes_with_4002(client, fake_redis):
+    # 비-JSON 문자열 등, 파싱 자체가 깨진 손상된 세션 데이터
+    asyncio.run(fake_redis.set("session:test-session-1", "not even json"))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        msg = ws.receive_json()
+        assert "error" in msg
 
         with pytest.raises(Exception) as exc_info:
             ws.receive_json()
@@ -155,6 +186,48 @@ def test_wrong_joint_count_keeps_session_alive(client, fake_redis):
         ws.send_json({"frame_idx": 1, "timestamp_ms": 33, "keypoints": reference_frame(1)})
         resp2 = ws.receive_json()
         assert "score" in resp2
+
+
+@pytest.mark.timeout(10)
+def test_warn_after_silence(client, fake_redis, monkeypatch):
+    """수신 없이 WARN_SEC 이상 지나면 경고만 오고 recommend_pause는 아직 없어야 한다."""
+    monkeypatch.setattr(ws_module, "_WARN_SEC", 0.1)
+    monkeypatch.setattr(ws_module, "_PAUSE_SEC", 5.0)
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        ws.receive_json()  # 첫 프레임 정상 응답
+
+        resp = ws.receive_json()  # 이후 아무것도 안 보내면 WARN_SEC 뒤 경고가 와야 함
+        assert resp.get("warning")
+        assert "recommend_pause" not in resp
+
+
+@pytest.mark.timeout(10)
+def test_recommend_pause_after_extended_silence(client, fake_redis, monkeypatch):
+    """수신 없이 PAUSE_SEC 이상 지나면 recommend_pause=True와 마지막 점수가 와야 한다."""
+    monkeypatch.setattr(ws_module, "_WARN_SEC", 0.1)
+    monkeypatch.setattr(ws_module, "_PAUSE_SEC", 0.3)
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        first = ws.receive_json()  # 첫 프레임 정상 응답
+
+        resp = ws.receive_json()
+        while not resp.get("recommend_pause"):
+            resp = ws.receive_json()
+
+        assert resp["recommend_pause"] is True
+        assert resp["score"] == first["score"]
+        assert resp["frame_idx"] == first["frame_idx"]
 
 
 @pytest.mark.timeout(10)
