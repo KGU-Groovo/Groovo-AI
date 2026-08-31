@@ -46,17 +46,27 @@ async def load_reference_keypoints(
         shape_raw = await redis.get(f"{cache_key}:shape")
         if shape_raw:
             shape = tuple(json.loads(shape_raw))
-            return arr.reshape(shape)
+            arr = arr.reshape(shape)
+            _validate_reference_shape(arr)
+            return arr
 
     logger.info("S3에서 reference keypoint 로드: %s", keypoint_path)
     arr = await _load_from_s3(keypoint_path)
     arr = arr.astype(np.float32)
+    _validate_reference_shape(arr)
 
     await redis.set(cache_key, arr.tobytes(), ex=settings.redis_session_ttl)
     await redis.set(
         f"{cache_key}:shape", json.dumps(list(arr.shape)), ex=settings.redis_session_ttl
     )
     return arr
+
+
+def _validate_reference_shape(arr: np.ndarray) -> None:
+    """frame_idx % num_frames에서 ZeroDivisionError가 나지 않도록 프레임 0개인
+    reference를 여기서 걸러 로드 단계(4003 close 경로)에서 실패시킨다."""
+    if arr.ndim != 3 or arr.shape[0] == 0 or arr.shape[1:] != (NUM_LANDMARKS, KEYPOINT_DIM):
+        raise ValueError(f"reference keypoints shape이 올바르지 않습니다: {arr.shape}")
 
 
 def compute_feedback(

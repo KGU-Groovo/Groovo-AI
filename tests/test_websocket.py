@@ -230,6 +230,25 @@ def test_recommend_pause_after_extended_silence(client, fake_redis, monkeypatch)
         assert resp["frame_idx"] == first["frame_idx"]
 
 
+def test_empty_reference_closes_with_4003(client, fake_redis):
+    """캐시된 reference keypoint가 0프레임이면 ZeroDivisionError로 죽지 않고 4003으로 닫혀야 한다."""
+    asyncio.run(_seed_session_only(fake_redis))
+    video_id = 999
+    cache_key = f"ref_kp:{video_id}"
+    empty_ref = np.zeros((0, 33, 3), dtype=np.float32)
+    asyncio.run(fake_redis.set(cache_key, empty_ref.tobytes()))
+    asyncio.run(fake_redis.set(f"{cache_key}:shape", json.dumps(list(empty_ref.shape))))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        msg = ws.receive_json()
+        assert msg == {"error": "keypoint 로드 실패"}
+
+        with pytest.raises(Exception) as exc_info:
+            ws.receive_json()
+        assert getattr(exc_info.value, "code", None) == 4003
+
+
 @pytest.mark.timeout(10)
 def test_ragged_keypoints_keeps_session_alive(client, fake_redis):
     """관절마다 좌표 개수가 다른 ragged 배열이 와도 세션이 끊기지 않는지 확인."""

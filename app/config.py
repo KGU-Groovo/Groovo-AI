@@ -2,6 +2,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    environment: str = "development"
+
     redis_url: str = "redis://localhost:6379"
     redis_session_ttl: int = 3600
 
@@ -25,3 +27,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.environment == "production" and settings.jwt_secret == "change-me":
+    raise RuntimeError(
+        "JWT_SECRET이 기본값(change-me)입니다. 프로덕션에서는 .env에 Spring Boot와 "
+        "동일한 실제 값을 설정해야 합니다."
+    )
