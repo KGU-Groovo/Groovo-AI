@@ -108,7 +108,7 @@ def test_invalid_token_closes_with_4001(client, fake_redis):
 
 def test_unknown_session_closes_with_4002(client, fake_redis):
     token = jwt.encode(
-        {"session_id": "no-such-session", "user_id": 1},
+        {"sub": "no-such-session", "userId": 1},
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
@@ -121,10 +121,14 @@ def test_unknown_session_closes_with_4002(client, fake_redis):
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4002
 
+    # 애초에 존재하지 않던 세션이므로 finalize가 좀비 키를 만들면 안 된다.
+    exists = asyncio.run(fake_redis.exists("session:no-such-session"))
+    assert exists == 0
+
 
 def test_malformed_session_data_closes_with_4002(client, fake_redis):
-    # 비-JSON 문자열 등, 파싱 자체가 깨진 손상된 세션 데이터
-    asyncio.run(fake_redis.set("session:test-session-1", "not even json"))
+    # 해시는 존재하지만 필수 필드(video_id, keypoint_path 등)가 빠진 손상된 세션 데이터
+    asyncio.run(fake_redis.hset("session:test-session-1", mapping={"status": "active"}))
     token = make_token()
 
     with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
@@ -134,6 +138,11 @@ def test_malformed_session_data_closes_with_4002(client, fake_redis):
         with pytest.raises(Exception) as exc_info:
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4002
+
+    # 세션 키 자체는 존재했으므로(데이터만 깨짐), active로 방치되지 않고
+    # finished로 갱신되어야 한다.
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
 
 
 def test_reference_load_failure_closes_with_4003(client, fake_redis, monkeypatch):
@@ -156,17 +165,22 @@ def test_reference_load_failure_closes_with_4003(client, fake_redis, monkeypatch
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4003
 
+    # 세션은 이미 Redis에 존재했으므로(2단계 통과), active로 방치되지 않고
+    # finished로 갱신되어야 한다.
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+
 
 async def _seed_session_only(redis):
-    session_value = {
-        "user_id": 1,
-        "video_id": 999,
+    session_fields = {
+        "user_id": "1",
+        "video_id": "999",
         "keypoint_path": "keypoints/video_999.npy",
-        "fps": 30.0,
+        "fps": "30.0",
         "status": "active",
-        "started_at": 0,
+        "started_at": "0",
     }
-    await redis.set("session:test-session-1", json.dumps(session_value))
+    await redis.hset("session:test-session-1", mapping=session_fields)
 
 
 @pytest.mark.timeout(10)
@@ -247,6 +261,78 @@ def test_empty_reference_closes_with_4003(client, fake_redis):
         with pytest.raises(Exception) as exc_info:
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4003
+
+
+def test_session_finalized_with_summary_on_normal_disconnect(client, fake_redis):
+    """정상 종료 시 세션 상태가 finished로 바뀌고, summary가 저장돼야 한다."""
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        first = ws.receive_json()
+        ws.send_json({"frame_idx": 1, "timestamp_ms": 33, "keypoints": reference_frame(1)})
+        second = ws.receive_json()
+    # `with` 블록을 벗어나면 클라이언트가 연결을 닫는다 (WebSocketDisconnect 트리거).
+
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+    assert b"finished_at" in session
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    assert raw_summary is not None
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 2
+    expected_avg = round((first["score"] + second["score"]) / 2, 4)
+    assert summary["average_score"] == expected_avg
+    assert summary["detail_path"] is None
+
+
+def test_finalize_does_not_resurrect_already_expired_session(client, fake_redis):
+    """세션 TTL이 이미 만료된 뒤 종료되면, HSET으로 TTL 없는 좀비 키를
+    새로 만들지 않아야 한다."""
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        ws.receive_json()
+        # 세션 종료 처리 직전에 세션 키가 만료된 상황을 흉내낸다.
+        asyncio.run(fake_redis.delete("session:test-session-1"))
+
+    exists = asyncio.run(fake_redis.exists("session:test-session-1"))
+    assert exists == 0  # 좀비 키로 되살아나지 않아야 함
+
+
+def test_no_summary_when_no_frames_processed(client, fake_redis):
+    """프레임을 하나도 못 받고 끝나면 summary는 안 남아야 한다."""
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    assert raw_summary is None
+
+
+def test_summary_ttl_matches_session_ttl(client, fake_redis):
+    asyncio.run(seed_session_and_reference(fake_redis))
+    asyncio.run(fake_redis.expire("session:test-session-1", 1800))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        ws.receive_json()
+
+    summary_ttl = asyncio.run(fake_redis.ttl("session:test-session-1:summary"))
+    assert 0 < summary_ttl <= 1800
 
 
 @pytest.mark.timeout(10)
