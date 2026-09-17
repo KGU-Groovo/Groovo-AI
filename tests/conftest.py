@@ -67,20 +67,22 @@ async def seed_session_and_reference(
     await redis.set(cache_key, ref.tobytes())
     await redis.set(f"{cache_key}:shape", json.dumps(list(ref.shape)))
 
-    session_value = {
-        "user_id": user_id,
-        "video_id": video_id,
+    # Spring Boot(SessionRedisStore)와 동일하게 Hash(HSET)로 저장한다.
+    session_fields = {
+        "user_id": str(user_id),
+        "video_id": str(video_id),
         "keypoint_path": f"keypoints/video_{video_id}.npy",
-        "fps": fps,
+        "fps": str(fps),
         "status": "active",
-        "started_at": 0,
+        "started_at": "0",
     }
-    await redis.set(f"session:{session_id}", json.dumps(session_value))
+    await redis.hset(f"session:{session_id}", mapping=session_fields)
 
 
 def make_token(session_id: str = "test-session-1", user_id: int = 1) -> str:
+    """Spring Boot(JwtProvider.create)와 동일하게 subject=session_id, userId claim으로 발급."""
     return jwt.encode(
-        {"session_id": session_id, "user_id": user_id},
+        {"sub": session_id, "userId": user_id},
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )

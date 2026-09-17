@@ -1,10 +1,13 @@
 import asyncio
 import json
 import logging
+import time
 
 import numpy as np
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from app.config import settings
 from app.redis_client import get_redis
 from app.services.keypoint_service import (
     KEYPOINT_DIM,
@@ -73,6 +76,7 @@ async def analyze_websocket(
     last_feedback: dict | None = None
     last_recv = asyncio.get_event_loop().time()
     warn_sent = False
+    frame_scores: list[float] = []
 
     # 4. 실시간 keypoint 수신 → 비교 → 피드백 반환
     try:
@@ -142,12 +146,50 @@ async def analyze_websocket(
                 fps=session.fps,
             )
             last_feedback = feedback
+            frame_scores.append(feedback["score"])
             await websocket.send_json(feedback)
 
     except WebSocketDisconnect:
         logger.info("WS 종료: session_id=%s", session_id)
     except Exception:
         logger.exception("WS 처리 중 오류: session_id=%s", session_id)
+    finally:
+        await _finalize_session(redis, session_id, frame_scores)
+
+
+async def _finalize_session(
+    redis: aioredis.Redis, session_id: str, frame_scores: list[float]
+) -> None:
+    """세션 종료 처리 (Notion '웹소켓 연결' 문서 '분석 종료 처리' 참고).
+
+    session:{id} 상태를 finished로 갱신하고, 처리한 프레임이 있으면
+    session:{id}:summary에 평균 점수를 저장한다. Spring Boot가 이 키를 읽어
+    reports 레코드를 생성한다. detail_path(프레임별 상세 S3 경로)는 아직
+    업로드 파이프라인이 없어 None으로 둔다.
+    """
+    key = f"session:{session_id}"
+    ttl = await redis.ttl(key)
+
+    if ttl == -2:
+        # 세션 키가 이미 TTL 만료로 사라짐. 여기서 HSET을 하면 TTL 없이
+        # 새로 생성돼(HSET은 키를 자동 생성함) 영구히 안 지워지는 좀비 키가
+        # 되므로, 이미 사라진 세션은 갱신하지 않는다.
+        logger.warning("세션 종료 처리 시점에 session:%s가 이미 만료됨", session_id)
+    else:
+        await redis.hset(
+            key, mapping={"status": "finished", "finished_at": str(int(time.time()))}
+        )
+
+    if not frame_scores:
+        return
+
+    summary = {
+        "average_score": round(sum(frame_scores) / len(frame_scores), 4),
+        "frame_count": len(frame_scores),
+        "detail_path": None,
+    }
+    summary_ttl = ttl if ttl and ttl > 0 else settings.redis_session_ttl
+    await redis.set(f"{key}:summary", json.dumps(summary), ex=summary_ttl)
 
 
 async def _receive_one(websocket: WebSocket) -> dict | None:
