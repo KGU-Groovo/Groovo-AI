@@ -121,6 +121,10 @@ def test_unknown_session_closes_with_4002(client, fake_redis):
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4002
 
+    # 애초에 존재하지 않던 세션이므로 finalize가 좀비 키를 만들면 안 된다.
+    exists = asyncio.run(fake_redis.exists("session:no-such-session"))
+    assert exists == 0
+
 
 def test_malformed_session_data_closes_with_4002(client, fake_redis):
     # 해시는 존재하지만 필수 필드(video_id, keypoint_path 등)가 빠진 손상된 세션 데이터
@@ -134,6 +138,11 @@ def test_malformed_session_data_closes_with_4002(client, fake_redis):
         with pytest.raises(Exception) as exc_info:
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4002
+
+    # 세션 키 자체는 존재했으므로(데이터만 깨짐), active로 방치되지 않고
+    # finished로 갱신되어야 한다.
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
 
 
 def test_reference_load_failure_closes_with_4003(client, fake_redis, monkeypatch):
@@ -155,6 +164,11 @@ def test_reference_load_failure_closes_with_4003(client, fake_redis, monkeypatch
         with pytest.raises(Exception) as exc_info:
             ws.receive_json()
         assert getattr(exc_info.value, "code", None) == 4003
+
+    # 세션은 이미 Redis에 존재했으므로(2단계 통과), active로 방치되지 않고
+    # finished로 갱신되어야 한다.
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
 
 
 async def _seed_session_only(redis):

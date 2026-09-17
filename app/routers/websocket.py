@@ -55,6 +55,10 @@ async def analyze_websocket(
     except LookupError as e:
         await websocket.send_json({"error": str(e)})
         await websocket.close(code=4002)
+        # 세션 키가 아예 없으면 _finalize_session의 ttl==-2 가드가 알아서
+        # 아무 것도 안 하고, 키는 있는데 데이터가 깨진 경우엔 finished로
+        # 갱신해서 active로 방치되지 않게 한다.
+        await _finalize_session(redis, session_id, [])
         return
 
     # 3. 기준 keypoint 로드 (Redis 캐시 → S3 순서)
@@ -66,6 +70,10 @@ async def analyze_websocket(
         logger.exception("reference keypoint 로드 실패")
         await websocket.send_json({"error": "keypoint 로드 실패"})
         await websocket.close(code=4003)
+        # 세션 자체는 Redis에 존재하는 상태(2단계 통과)이므로, 여기서 끝내지
+        # 않으면 active 상태로 TTL 만료 때까지 방치된다. 프레임은 하나도
+        # 처리 못 했으니 summary 없이 상태만 finished로 갱신한다.
+        await _finalize_session(redis, session_id, [])
         return
 
     await websocket.send_json({"status": "ready", "video_id": session.video_id})
