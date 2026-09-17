@@ -31,6 +31,32 @@ async def _load_from_s3(keypoint_path: str) -> np.ndarray:
     return arr
 
 
+async def upload_session_detail(session_id: str, frame_details: list[dict]) -> str:
+    """세션 종료 시 프레임별 상세 점수(frame_idx/timestamp_ms/score/worst_joints)를
+    S3에 JSON으로 업로드하고 키를 반환한다.
+
+    presigned URL로 클라이언트에 서빙하는 쪽(Spring Boot의 S3ObjectStorage.
+    createDownloadPresignedUrl)은 이미 있으므로, 여기서는 파일을 만들어
+    올리기만 한다. 업로드 실패 시 세션 종료 처리 자체가 막히면 안 되므로
+    예외 처리는 호출부(_finalize_session)에서 감싼다.
+    """
+    key = f"reports/{session_id}.json"
+    session = aioboto3.Session(
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        region_name=settings.aws_region,
+    )
+    body = json.dumps(frame_details).encode("utf-8")
+    async with session.client("s3") as s3:
+        await s3.put_object(
+            Bucket=settings.s3_bucket_name,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+        )
+    return key
+
+
 async def load_reference_keypoints(
     redis: aioredis.Redis,
     video_id: int,
