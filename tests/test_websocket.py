@@ -381,3 +381,208 @@ def test_ragged_keypoints_keeps_session_alive(client, fake_redis):
         ws.send_json({"frame_idx": 1, "timestamp_ms": 33, "keypoints": reference_frame(1)})
         resp2 = ws.receive_json()
         assert "score" in resp2
+
+
+def test_pentagon_window_trigger_ignores_error_frames(client, fake_redis):
+    """손상된 프레임이 섞여도 30프레임 윈도우 트리거는 유효한 프레임 수만 세야 한다.
+
+    에러 프레임은 processed_frame_count를 증가시키지 않으므로, 섞여 있어도
+    정확히 30번째 "유효한" 프레임에서 pentagon 윈도우가 한 번만 트리거돼야 한다.
+    """
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    valid_sent = 0
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(50):
+            if i % 4 == 3:
+                ragged_kp = [[0.1, 0.1, 0.1]] * 10  # 관절 개수 틀린 손상 프레임
+                ws.send_json({"frame_idx": i, "timestamp_ms": i * 33, "keypoints": ragged_kp})
+                resp = ws.receive_json()
+                assert "error" in resp
+            else:
+                ws.send_json(
+                    {
+                        "frame_idx": i,
+                        "timestamp_ms": valid_sent * 33,
+                        "keypoints": reference_frame(valid_sent),
+                    }
+                )
+                resp = ws.receive_json()
+                assert "score" in resp
+                valid_sent += 1
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == valid_sent
+    assert summary["pentagon_scores"] is not None
+    assert summary["pentagon_scores"]["window_count"] == 1
+
+
+def test_no_pentagon_scores_under_30_frames(client, fake_redis):
+    """pentagon_scoring은 30프레임 미만이면 채점 불가하므로 None이어야 한다."""
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(5):
+            ws.send_json(
+                {"frame_idx": i, "timestamp_ms": i * 33, "keypoints": reference_frame(i)}
+            )
+            ws.receive_json()
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["pentagon_scores"] is None
+
+
+def test_pentagon_scores_included_after_30_frames(client, fake_redis):
+    """30프레임 이상 모이면 pentagon_scoring 오각형 점수가 summary에 담겨야 한다.
+
+    31프레임을 보내는 이유: 정확히 30번째 프레임에서 트리거된 to_thread 채점이
+    끝나기 전에 테스트 클라이언트가 바로 연결을 닫아버리면(트리거 프레임 == 마지막
+    프레임) asyncio.to_thread await가 연결 종료와 경합할 수 있어, 트리거 이후
+    프레임을 하나 더 보내 채점이 끝날 시간을 준다.
+    """
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(31):
+            ws.send_json(
+                {"frame_idx": i, "timestamp_ms": i * 33, "keypoints": reference_frame(i)}
+            )
+            ws.receive_json()
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    pentagon = summary["pentagon_scores"]
+    assert pentagon is not None
+    assert pentagon["window_count"] == 1
+    assert set(pentagon["scores"]) == {"accuracy", "detail", "balance", "timing", "rhythm"}
+    assert 0 <= pentagon["final_score"] <= 100
+
+
+def test_pentagon_scoring_failure_keeps_session_and_realtime_feedback_alive(
+    client, fake_redis, monkeypatch
+):
+    """pentagon 채점이 예외를 던져도 실시간 피드백/세션 종료 처리는 영향받지 않아야 한다."""
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("pentagon scoring exploded")
+
+    monkeypatch.setattr("app.routers.websocket.score_window", _raise)
+
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(31):
+            ws.send_json(
+                {"frame_idx": i, "timestamp_ms": i * 33, "keypoints": reference_frame(i)}
+            )
+            resp = ws.receive_json()
+            assert "score" in resp  # 실시간 피드백은 정상 유지
+
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 31
+    assert summary["pentagon_scores"] is None  # 계산 실패한 윈도우는 결과에 안 들어감
+
+
+def test_pentagon_scoring_handles_untracked_person_gracefully(client, fake_redis):
+    """MediaPipe가 사람을 못 잡아 전부 [0,0,0]으로 오는 흔한 실제 케이스에서도
+    세션/실시간 피드백은 살아있어야 한다.
+
+    pentagon_scoring 내부 정규화 로직이 어깨너비가 전부 0에 가까우면
+    ValueError("no valid xy shoulder widths")를 던지는데(app/pentagon/
+    pentagon_common.py), 이건 score_window 호출부의 try/except로 잡혀서
+    해당 윈도우만 스킵돼야 하고 세션 전체가 죽으면 안 된다.
+    """
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(31):
+            ws.send_json(
+                {
+                    "frame_idx": i,
+                    "timestamp_ms": i * 33,
+                    "keypoints": [[0.0, 0.0, 0.0]] * 33,
+                }
+            )
+            resp = ws.receive_json()
+            assert "score" in resp  # 실시간 피드백은 정상 유지 (score는 0에 가까울 뿐)
+
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 31
+    assert summary["pentagon_scores"] is None
+
+
+def test_pentagon_scoring_skips_window_with_reference_seam(client, fake_redis):
+    """기준 영상이 30프레임 윈도우보다 짧아 순환 이음매를 지나가면, 그 윈도우는
+    크래시 없이 스킵되고(완전히 일치하는 데이터로도 잘못된 저점이 나오는 걸 막기
+    위함) 최종 pentagon_scores는 None이어야 한다.
+
+    keypoint_service.compute_feedback의 frame_idx 보정은 이제 순환(%)하므로
+    (app/services/keypoint_service.py) 실시간 점수 자체는 정상(0.99+)이 나오지만,
+    pentagon_scoring은 입력을 연속된 한 클립으로 가정하기 때문에 윈도우 안에서
+    "마지막 프레임 → 다시 처음 프레임"으로 튀는 이음매를 실제 동작으로 오인해
+    accuracy/balance가 완전히 잘못 나온다(완벽 일치 데이터로 accuracy=0 실측).
+    window_has_reference_seam이 이런 윈도우를 감지해 계산을 스킵한다.
+    """
+    asyncio.run(
+        seed_session_and_reference(fake_redis, num_frames=10)
+    )
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(31):
+            ws.send_json(
+                {
+                    "frame_idx": i,
+                    "timestamp_ms": i * 33,
+                    "keypoints": reference_frame(i, num_frames=10),
+                }
+            )
+            resp = ws.receive_json()
+            assert "score" in resp  # 실시간 경로는 크래시 없이 계속 응답
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 31
+    assert summary["average_score"] > 0.9  # 실시간 점수는 순환 덕분에 정상
+    assert summary["pentagon_scores"] is None  # 이음매 낀 윈도우는 스킵됨
+
+
+def test_pentagon_scores_run_every_30_frames_sliding(client, fake_redis):
+    """30프레임마다 슬라이딩 윈도우로 보조 채점이 반복 실행돼야 한다 (60번째에서 2번째 실행)."""
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(65):
+            ws.send_json(
+                {"frame_idx": i, "timestamp_ms": i * 33, "keypoints": reference_frame(i)}
+            )
+            ws.receive_json()
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    pentagon = summary["pentagon_scores"]
+    assert pentagon is not None
+    assert pentagon["window_count"] == 2

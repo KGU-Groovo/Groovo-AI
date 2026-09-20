@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 
 import numpy as np
 import redis.asyncio as aioredis
@@ -15,6 +16,12 @@ from app.services.keypoint_service import (
     compute_feedback,
     load_reference_keypoints,
     upload_session_detail,
+)
+from app.services.pentagon_scoring_service import (
+    WINDOW_SIZE,
+    aggregate_pentagon_results,
+    score_window,
+    window_has_reference_seam,
 )
 from app.services.session_service import get_session
 from app.services.token_service import verify_ws_token
@@ -59,7 +66,7 @@ async def analyze_websocket(
         # 세션 키가 아예 없으면 _finalize_session의 ttl==-2 가드가 알아서
         # 아무 것도 안 하고, 키는 있는데 데이터가 깨진 경우엔 finished로
         # 갱신해서 active로 방치되지 않게 한다.
-        await _finalize_session(redis, session_id, [])
+        await _finalize_session(redis, session_id, [], [])
         return
 
     # 3. 기준 keypoint 로드 (Redis 캐시 → S3 순서)
@@ -74,7 +81,7 @@ async def analyze_websocket(
         # 세션 자체는 Redis에 존재하는 상태(2단계 통과)이므로, 여기서 끝내지
         # 않으면 active 상태로 TTL 만료 때까지 방치된다. 프레임은 하나도
         # 처리 못 했으니 summary 없이 상태만 finished로 갱신한다.
-        await _finalize_session(redis, session_id, [])
+        await _finalize_session(redis, session_id, [], [])
         return
 
     await websocket.send_json({"status": "ready", "video_id": session.video_id})
@@ -86,6 +93,14 @@ async def analyze_websocket(
     last_recv = asyncio.get_event_loop().time()
     warn_sent = False
     frame_details: list[dict] = []
+    # pentagon_scoring용 슬라이딩 윈도우 버퍼 (Notion "웹소켓 연결" 문서의 DCA-Net v2
+    # 연동 설계와 동일한 구조: 최근 WINDOW_SIZE프레임만 유지하다가 30프레임마다 보조
+    # 채점을 실행한다). 매 프레임 실시간 응답 경로(compute_feedback)와는 무관하다.
+    user_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
+    ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
+    ref_idx_window: deque[int] = deque(maxlen=WINDOW_SIZE)
+    pentagon_window_results: list[dict] = []
+    processed_frame_count = 0
 
     # 4. 실시간 keypoint 수신 → 비교 → 피드백 반환
     try:
@@ -163,16 +178,51 @@ async def analyze_websocket(
             })
             await websocket.send_json(feedback)
 
+            processed_frame_count += 1
+            ref_idx = feedback["frame_idx"] % reference_kp.shape[0]
+            user_kp_window.append(incoming_kp)
+            ref_kp_window.append(reference_kp[ref_idx])
+            ref_idx_window.append(ref_idx)
+            # 30프레임 단위 보조 추론 (Notion 문서: 매 프레임 필수 경로에 넣지 않고
+            # 30프레임마다만 실행 + to_thread로 실시간 응답 루프를 막지 않는다).
+            if len(user_kp_window) == WINDOW_SIZE and processed_frame_count % WINDOW_SIZE == 0:
+                if window_has_reference_seam(list(ref_idx_window), reference_kp.shape[0]):
+                    # 기준 영상이 WINDOW_SIZE보다 짧아 윈도우 안에서 순환 이음매를
+                    # 지나가면 pentagon이 이걸 실제 동작으로 오인해 완전히 잘못된
+                    # 점수를 낸다 (완벽히 일치해도 accuracy=0 실측). 계산 자체를
+                    # 스킵하는 게 잘못된 점수보다 안전하다.
+                    logger.info(
+                        "기준 영상 순환 이음매가 윈도우에 포함돼 pentagon 계산 스킵"
+                        " (frame %s): session_id=%s",
+                        processed_frame_count,
+                        session_id,
+                    )
+                else:
+                    try:
+                        window_result = await asyncio.to_thread(
+                            score_window, list(user_kp_window), list(ref_kp_window)
+                        )
+                        pentagon_window_results.append(window_result)
+                    except Exception:
+                        logger.exception(
+                            "pentagon 오각형 점수 계산 실패 (frame %s): session_id=%s",
+                            processed_frame_count,
+                            session_id,
+                        )
+
     except WebSocketDisconnect:
         logger.info("WS 종료: session_id=%s", session_id)
     except Exception:
         logger.exception("WS 처리 중 오류: session_id=%s", session_id)
     finally:
-        await _finalize_session(redis, session_id, frame_details)
+        await _finalize_session(redis, session_id, frame_details, pentagon_window_results)
 
 
 async def _finalize_session(
-    redis: aioredis.Redis, session_id: str, frame_details: list[dict]
+    redis: aioredis.Redis,
+    session_id: str,
+    frame_details: list[dict],
+    pentagon_window_results: list[dict],
 ) -> None:
     """세션 종료 처리 (Notion '웹소켓 연결' 문서 '분석 종료 처리' 참고).
 
@@ -204,11 +254,14 @@ async def _finalize_session(
         # 막지 않는다. detail_path는 None으로 남는다.
         logger.exception("세션 상세 결과 S3 업로드 실패: session_id=%s", session_id)
 
+    pentagon_scores = aggregate_pentagon_results(pentagon_window_results)
+
     scores = [frame["score"] for frame in frame_details]
     summary = {
         "average_score": round(sum(scores) / len(scores), 4),
         "frame_count": len(frame_details),
         "detail_path": detail_path,
+        "pentagon_scores": pentagon_scores,
     }
     summary_ttl = ttl if ttl and ttl > 0 else settings.redis_session_ttl
     await redis.set(f"{key}:summary", json.dumps(summary), ex=summary_ttl)
