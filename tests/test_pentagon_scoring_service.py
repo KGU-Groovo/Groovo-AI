@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
 
+from app.pentagon.pentagon_config import PentagonConfig
 from app.services.pentagon_scoring_service import (
+    WINDOW_SIZE,
     aggregate_pentagon_results,
     score_window,
     window_has_reference_seam,
@@ -24,6 +26,14 @@ def _skeleton_sequence(seed: int = 0) -> np.ndarray:
     return seq
 
 
+def test_window_size_matches_pentagon_config_expected_frames():
+    """websocket.py의 WINDOW_SIZE와 pentagon_scoring의 PentagonConfig.expected_frames가
+    어긋나면(둘 중 하나만 리팩터링돼도) score_window가 매번 ValueError로 실패해서
+    pentagon_scores가 항상 None이 되는 조용한 회귀가 생긴다. 두 상수가 항상 같은
+    값을 쓰는지 여기서 고정해둔다."""
+    assert WINDOW_SIZE == PentagonConfig().expected_frames
+
+
 def test_no_seam_when_reference_index_increases_normally():
     """기준 영상이 윈도우보다 길어 순환 없이 쭉 증가하면 이음매가 아니다."""
     assert not window_has_reference_seam(list(range(0, 30)), num_frames=100)
@@ -43,6 +53,23 @@ def test_seam_detected_when_index_wraps_from_end_to_start():
     assert window_has_reference_seam(indices, num_frames=20)
 
 
+def test_no_false_positive_seam_on_minor_reorder_in_long_reference():
+    """기준 영상이 충분히 길면, 네트워크 재정렬로 인한 사소한 순서 뒤바뀜이나
+    미세한 지터는 이음매로 오탐하면 안 된다."""
+    jitter = [0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 7, 7, 8, 9, 9, 10]
+    assert not window_has_reference_seam(jitter, num_frames=200)
+
+    minor_swap = [0, 1, 2, 3, 5, 4, 6, 8, 7, 9, 10, 12, 11, 13, 14, 15]
+    assert not window_has_reference_seam(minor_swap, num_frames=200)
+
+
+def test_no_false_positive_seam_on_backward_seek_in_long_reference():
+    """기준 영상이 충분히 길면, 실제 순환이 아닌 되감기(뒤로 점프)라도 그 폭이
+    기준 영상 길이의 절반을 안 넘으면 이음매로 오탐하면 안 된다."""
+    seek_back = list(range(0, 20)) + list(range(0, 10))
+    assert not window_has_reference_seam(seek_back, num_frames=200)
+
+
 def test_no_seam_for_single_frame_reference():
     """기준 영상이 1프레임이면 순환 개념 자체가 없으므로 이음매 아님."""
     assert not window_has_reference_seam([0] * 30, num_frames=1)
@@ -51,6 +78,28 @@ def test_no_seam_for_single_frame_reference():
 def test_aggregate_returns_none_when_all_windows_skipped():
     """모든 윈도우가 이음매 때문에 스킵돼 결과가 하나도 없으면 None을 반환해야 한다."""
     assert aggregate_pentagon_results([]) is None
+
+
+def test_aggregate_computes_exact_arithmetic_mean_across_windows():
+    """윈도우별 결과를 단순 산술 평균으로 집계하는지 정확한 숫자로 검증한다
+    (가중 평균이나 다른 집계 방식으로 잘못 바뀌는 회귀를 방지)."""
+    window_results = [
+        {"final_score": 100.0, "scores": {"accuracy": 100.0, "detail": 90.0, "balance": 80.0, "timing": 70.0, "rhythm": 60.0}},
+        {"final_score": 50.0, "scores": {"accuracy": 50.0, "detail": 50.0, "balance": 50.0, "timing": 50.0, "rhythm": 50.0}},
+        {"final_score": 0.0, "scores": {"accuracy": 0.0, "detail": 10.0, "balance": 20.0, "timing": 30.0, "rhythm": 40.0}},
+    ]
+
+    result = aggregate_pentagon_results(window_results)
+
+    assert result["window_count"] == 3
+    assert result["final_score"] == 50.0  # (100+50+0)/3
+    assert result["scores"] == {
+        "accuracy": 50.0,   # (100+50+0)/3
+        "detail": 50.0,     # (90+50+10)/3
+        "balance": 50.0,    # (80+50+20)/3
+        "timing": 50.0,     # (70+50+30)/3
+        "rhythm": 50.0,     # (60+50+40)/3
+    }
 
 
 def test_score_window_raises_on_untracked_person():

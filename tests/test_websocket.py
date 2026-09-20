@@ -383,6 +383,43 @@ def test_ragged_keypoints_keeps_session_alive(client, fake_redis):
         assert "score" in resp2
 
 
+def test_pentagon_window_trigger_ignores_error_frames(client, fake_redis):
+    """손상된 프레임이 섞여도 30프레임 윈도우 트리거는 유효한 프레임 수만 세야 한다.
+
+    에러 프레임은 processed_frame_count를 증가시키지 않으므로, 섞여 있어도
+    정확히 30번째 "유효한" 프레임에서 pentagon 윈도우가 한 번만 트리거돼야 한다.
+    """
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    valid_sent = 0
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(50):
+            if i % 4 == 3:
+                ragged_kp = [[0.1, 0.1, 0.1]] * 10  # 관절 개수 틀린 손상 프레임
+                ws.send_json({"frame_idx": i, "timestamp_ms": i * 33, "keypoints": ragged_kp})
+                resp = ws.receive_json()
+                assert "error" in resp
+            else:
+                ws.send_json(
+                    {
+                        "frame_idx": i,
+                        "timestamp_ms": valid_sent * 33,
+                        "keypoints": reference_frame(valid_sent),
+                    }
+                )
+                resp = ws.receive_json()
+                assert "score" in resp
+                valid_sent += 1
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == valid_sent
+    assert summary["pentagon_scores"] is not None
+    assert summary["pentagon_scores"]["window_count"] == 1
+
+
 def test_no_pentagon_scores_under_30_frames(client, fake_redis):
     """pentagon_scoring은 30프레임 미만이면 채점 불가하므로 None이어야 한다."""
     asyncio.run(seed_session_and_reference(fake_redis))
