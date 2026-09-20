@@ -460,15 +460,17 @@ def test_pentagon_scoring_failure_keeps_session_and_realtime_feedback_alive(
     assert summary["pentagon_scores"] is None  # 계산 실패한 윈도우는 결과에 안 들어감
 
 
-def test_pentagon_scoring_survives_reference_shorter_than_session(client, fake_redis):
-    """기준 영상이 세션 길이보다 짧아도(실사용에선 드물지만) 크래시 없이 넘어가야 한다.
+def test_pentagon_scoring_skips_window_with_reference_seam(client, fake_redis):
+    """기준 영상이 30프레임 윈도우보다 짧아 순환 이음매를 지나가면, 그 윈도우는
+    크래시 없이 스킵되고(완전히 일치하는 데이터로도 잘못된 저점이 나오는 걸 막기
+    위함) 최종 pentagon_scores는 None이어야 한다.
 
-    keypoint_service.compute_feedback의 frame_idx 보정은 `min(...)`으로 클램프만
-    하고 순환(wrap)하지 않는다 (app/services/keypoint_service.py:117, 기존 코드,
-    이번 pentagon 연동 대상 아님). 즉 재생 시간이 기준 영상 길이를 넘어가면
-    frame_idx가 마지막 프레임에 고정된다. 실사용에선 기준 영상이 세션보다 훨씬
-    기므로(3분/2700프레임) 거의 발생하지 않지만, 발생해도 pentagon 채점이 예외 없이
-    (점수 품질은 별개로) 끝까지 도는지는 확인해둔다.
+    keypoint_service.compute_feedback의 frame_idx 보정은 이제 순환(%)하므로
+    (app/services/keypoint_service.py) 실시간 점수 자체는 정상(0.99+)이 나오지만,
+    pentagon_scoring은 입력을 연속된 한 클립으로 가정하기 때문에 윈도우 안에서
+    "마지막 프레임 → 다시 처음 프레임"으로 튀는 이음매를 실제 동작으로 오인해
+    accuracy/balance가 완전히 잘못 나온다(완벽 일치 데이터로 accuracy=0 실측).
+    window_has_reference_seam이 이런 윈도우를 감지해 계산을 스킵한다.
     """
     asyncio.run(
         seed_session_and_reference(fake_redis, num_frames=10)
@@ -491,8 +493,8 @@ def test_pentagon_scoring_survives_reference_shorter_than_session(client, fake_r
     raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
     summary = json.loads(raw_summary)
     assert summary["frame_count"] == 31
-    # 크래시 없이 결과가 나오기만 하면 됨 (frame_idx가 고정돼 점수 품질 자체는 보장 안 함)
-    assert summary["pentagon_scores"] is not None
+    assert summary["average_score"] > 0.9  # 실시간 점수는 순환 덕분에 정상
+    assert summary["pentagon_scores"] is None  # 이음매 낀 윈도우는 스킵됨
 
 
 def test_pentagon_scores_run_every_30_frames_sliding(client, fake_redis):

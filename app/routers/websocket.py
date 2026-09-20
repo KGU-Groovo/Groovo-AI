@@ -21,6 +21,7 @@ from app.services.pentagon_scoring_service import (
     WINDOW_SIZE,
     aggregate_pentagon_results,
     score_window,
+    window_has_reference_seam,
 )
 from app.services.session_service import get_session
 from app.services.token_service import verify_ws_token
@@ -97,6 +98,7 @@ async def analyze_websocket(
     # 채점을 실행한다). 매 프레임 실시간 응답 경로(compute_feedback)와는 무관하다.
     user_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
     ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
+    ref_idx_window: deque[int] = deque(maxlen=WINDOW_SIZE)
     pentagon_window_results: list[dict] = []
     processed_frame_count = 0
 
@@ -177,22 +179,36 @@ async def analyze_websocket(
             await websocket.send_json(feedback)
 
             processed_frame_count += 1
+            ref_idx = feedback["frame_idx"] % reference_kp.shape[0]
             user_kp_window.append(incoming_kp)
-            ref_kp_window.append(reference_kp[feedback["frame_idx"] % reference_kp.shape[0]])
+            ref_kp_window.append(reference_kp[ref_idx])
+            ref_idx_window.append(ref_idx)
             # 30프레임 단위 보조 추론 (Notion 문서: 매 프레임 필수 경로에 넣지 않고
             # 30프레임마다만 실행 + to_thread로 실시간 응답 루프를 막지 않는다).
             if len(user_kp_window) == WINDOW_SIZE and processed_frame_count % WINDOW_SIZE == 0:
-                try:
-                    window_result = await asyncio.to_thread(
-                        score_window, list(user_kp_window), list(ref_kp_window)
-                    )
-                    pentagon_window_results.append(window_result)
-                except Exception:
-                    logger.exception(
-                        "pentagon 오각형 점수 계산 실패 (frame %s): session_id=%s",
+                if window_has_reference_seam(list(ref_idx_window), reference_kp.shape[0]):
+                    # 기준 영상이 WINDOW_SIZE보다 짧아 윈도우 안에서 순환 이음매를
+                    # 지나가면 pentagon이 이걸 실제 동작으로 오인해 완전히 잘못된
+                    # 점수를 낸다 (완벽히 일치해도 accuracy=0 실측). 계산 자체를
+                    # 스킵하는 게 잘못된 점수보다 안전하다.
+                    logger.info(
+                        "기준 영상 순환 이음매가 윈도우에 포함돼 pentagon 계산 스킵"
+                        " (frame %s): session_id=%s",
                         processed_frame_count,
                         session_id,
                     )
+                else:
+                    try:
+                        window_result = await asyncio.to_thread(
+                            score_window, list(user_kp_window), list(ref_kp_window)
+                        )
+                        pentagon_window_results.append(window_result)
+                    except Exception:
+                        logger.exception(
+                            "pentagon 오각형 점수 계산 실패 (frame %s): session_id=%s",
+                            processed_frame_count,
+                            session_id,
+                        )
 
     except WebSocketDisconnect:
         logger.info("WS 종료: session_id=%s", session_id)

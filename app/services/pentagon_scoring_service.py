@@ -12,6 +12,28 @@ logger = logging.getLogger(__name__)
 WINDOW_SIZE = 30
 
 
+def window_has_reference_seam(ref_indices: list[int], num_frames: int) -> bool:
+    """윈도우 안에서 기준 영상이 순환(loop)되는 이음매를 지나가는지 검사한다.
+
+    기준 영상이 WINDOW_SIZE보다 짧으면 슬라이딩 버퍼가 기준 프레임을
+    `% num_frames`로 순환시키는데, pentagon_scoring은 입력이 연속된 한 클립이라고
+    가정하므로 "마지막 프레임 → 다시 처음 프레임"으로 튀는 이 이음매를 실제
+    동작으로 오인해 정렬(timing lag 탐색)이 깨지고 accuracy/balance가 크게
+    잘못 나온다 (완벽히 일치하는 데이터로도 accuracy=0이 나오는 걸 실측 확인함).
+    이런 윈도우는 계산 자체를 스킵하는 게 잘못된 점수를 내는 것보다 안전하다.
+
+    순환하지 않는 정상 구간에서는 인덱스가 (fps 차이로 가끔 반복될 수는 있어도)
+    큰 폭으로 뒤로 가지 않으므로, num_frames의 절반보다 큰 역방향 점프만
+    이음매로 판단한다.
+    """
+    if num_frames <= 1:
+        return False
+    half = num_frames / 2
+    return any(
+        prev - curr > half for prev, curr in zip(ref_indices, ref_indices[1:])
+    )
+
+
 def score_window(user_window: list[np.ndarray], ref_window: list[np.ndarray]) -> dict:
     """최근 WINDOW_SIZE프레임(사용자/기준)으로 오각형 점수 1회 계산.
 
