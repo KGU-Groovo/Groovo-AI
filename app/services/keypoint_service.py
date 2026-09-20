@@ -112,9 +112,15 @@ def compute_feedback(
     """
     num_frames = reference.shape[0]
 
-    # timestamp_ms가 있으면 경과 시간으로 프레임을 재계산해 드랍 보정
+    # timestamp_ms가 있으면 경과 시간으로 프레임을 재계산해 드랍 보정.
+    # - 클램프(min)가 아니라 순환(%)이어야 재생 시간이 기준 영상 길이를 넘어도
+    #   마지막 프레임에 고정되지 않고 처음부터 다시 순환한다.
+    # - int() 절삭 대신 round()를 써야 한다: 클라이언트가 보내는 timestamp_ms 자체가
+    #   정수 반올림된 값이라, int()로 다시 자르면 오차가 누적돼 30fps 기준
+    #   frame_idx가 3프레임마다 한 번꼴로 중복되거나 하나씩 건너뛴다(왕복 시뮬레이션
+    #   300프레임 중 반복 100회, 스킵 99회). round()는 이 누적 오차를 0으로 없앤다.
     if timestamp_ms is not None:
-        frame_idx = min(int(timestamp_ms * fps / 1000), num_frames - 1)
+        frame_idx = round(timestamp_ms * fps / 1000) % num_frames
 
     ref_frame = reference[frame_idx % num_frames]
 
