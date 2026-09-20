@@ -263,7 +263,7 @@ def test_empty_reference_closes_with_4003(client, fake_redis):
         assert getattr(exc_info.value, "code", None) == 4003
 
 
-def test_session_finalized_with_summary_on_normal_disconnect(client, fake_redis):
+def test_session_finalized_with_summary_on_normal_disconnect(client, fake_redis, fake_s3_upload):
     """정상 종료 시 세션 상태가 finished로 바뀌고, summary가 저장돼야 한다."""
     asyncio.run(seed_session_and_reference(fake_redis))
     token = make_token()
@@ -286,6 +286,35 @@ def test_session_finalized_with_summary_on_normal_disconnect(client, fake_redis)
     assert summary["frame_count"] == 2
     expected_avg = round((first["score"] + second["score"]) / 2, 4)
     assert summary["average_score"] == expected_avg
+    assert summary["detail_path"] == "reports/test-session-1.json"
+
+    # 업로드된 프레임별 상세 데이터도 검증
+    assert len(fake_s3_upload) == 1
+    uploaded_session_id, uploaded_frames = fake_s3_upload[0]
+    assert uploaded_session_id == "test-session-1"
+    assert [f["score"] for f in uploaded_frames] == [first["score"], second["score"]]
+    assert uploaded_frames[0]["frame_idx"] == 0
+    assert uploaded_frames[0]["worst_joints"] == first["worst_joints"]
+
+
+def test_detail_upload_failure_still_saves_average_score(client, fake_redis, monkeypatch):
+    """S3 업로드가 실패해도 평균 점수는 저장되고, detail_path만 None이어야 한다."""
+    async def _raise(*args, **kwargs):
+        raise RuntimeError("S3 unreachable in test")
+
+    monkeypatch.setattr("app.routers.websocket.upload_session_detail", _raise)
+
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
+        ws.receive_json()
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 1
     assert summary["detail_path"] is None
 
 
