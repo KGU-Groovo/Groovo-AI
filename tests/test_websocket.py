@@ -460,6 +460,40 @@ def test_pentagon_scoring_failure_keeps_session_and_realtime_feedback_alive(
     assert summary["pentagon_scores"] is None  # 계산 실패한 윈도우는 결과에 안 들어감
 
 
+def test_pentagon_scoring_handles_untracked_person_gracefully(client, fake_redis):
+    """MediaPipe가 사람을 못 잡아 전부 [0,0,0]으로 오는 흔한 실제 케이스에서도
+    세션/실시간 피드백은 살아있어야 한다.
+
+    pentagon_scoring 내부 정규화 로직이 어깨너비가 전부 0에 가까우면
+    ValueError("no valid xy shoulder widths")를 던지는데(app/pentagon/
+    pentagon_common.py), 이건 score_window 호출부의 try/except로 잡혀서
+    해당 윈도우만 스킵돼야 하고 세션 전체가 죽으면 안 된다.
+    """
+    asyncio.run(seed_session_and_reference(fake_redis))
+    token = make_token()
+
+    with client.websocket_connect(f"/ws/analyze?token={token}") as ws:
+        ws.receive_json()  # ready
+        for i in range(31):
+            ws.send_json(
+                {
+                    "frame_idx": i,
+                    "timestamp_ms": i * 33,
+                    "keypoints": [[0.0, 0.0, 0.0]] * 33,
+                }
+            )
+            resp = ws.receive_json()
+            assert "score" in resp  # 실시간 피드백은 정상 유지 (score는 0에 가까울 뿐)
+
+    session = asyncio.run(fake_redis.hgetall("session:test-session-1"))
+    assert session[b"status"] == b"finished"
+
+    raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
+    summary = json.loads(raw_summary)
+    assert summary["frame_count"] == 31
+    assert summary["pentagon_scores"] is None
+
+
 def test_pentagon_scoring_skips_window_with_reference_seam(client, fake_redis):
     """기준 영상이 30프레임 윈도우보다 짧아 순환 이음매를 지나가면, 그 윈도우는
     크래시 없이 스킵되고(완전히 일치하는 데이터로도 잘못된 저점이 나오는 걸 막기
