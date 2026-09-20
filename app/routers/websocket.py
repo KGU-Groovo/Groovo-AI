@@ -14,6 +14,7 @@ from app.services.keypoint_service import (
     NUM_LANDMARKS,
     compute_feedback,
     load_reference_keypoints,
+    upload_session_detail,
 )
 from app.services.session_service import get_session
 from app.services.token_service import verify_ws_token
@@ -84,7 +85,7 @@ async def analyze_websocket(
     last_feedback: dict | None = None
     last_recv = asyncio.get_event_loop().time()
     warn_sent = False
-    frame_scores: list[float] = []
+    frame_details: list[dict] = []
 
     # 4. 실시간 keypoint 수신 → 비교 → 피드백 반환
     try:
@@ -154,7 +155,12 @@ async def analyze_websocket(
                 fps=session.fps,
             )
             last_feedback = feedback
-            frame_scores.append(feedback["score"])
+            frame_details.append({
+                "frame_idx": feedback["frame_idx"],
+                "timestamp_ms": timestamp_ms,
+                "score": feedback["score"],
+                "worst_joints": feedback["worst_joints"],
+            })
             await websocket.send_json(feedback)
 
     except WebSocketDisconnect:
@@ -162,18 +168,17 @@ async def analyze_websocket(
     except Exception:
         logger.exception("WS 처리 중 오류: session_id=%s", session_id)
     finally:
-        await _finalize_session(redis, session_id, frame_scores)
+        await _finalize_session(redis, session_id, frame_details)
 
 
 async def _finalize_session(
-    redis: aioredis.Redis, session_id: str, frame_scores: list[float]
+    redis: aioredis.Redis, session_id: str, frame_details: list[dict]
 ) -> None:
     """세션 종료 처리 (Notion '웹소켓 연결' 문서 '분석 종료 처리' 참고).
 
     session:{id} 상태를 finished로 갱신하고, 처리한 프레임이 있으면
-    session:{id}:summary에 평균 점수를 저장한다. Spring Boot가 이 키를 읽어
-    reports 레코드를 생성한다. detail_path(프레임별 상세 S3 경로)는 아직
-    업로드 파이프라인이 없어 None으로 둔다.
+    session:{id}:summary에 평균 점수와 프레임별 상세 데이터의 S3 경로를
+    저장한다. Spring Boot가 이 키를 읽어 reports 레코드를 생성한다.
     """
     key = f"session:{session_id}"
     ttl = await redis.ttl(key)
@@ -188,13 +193,22 @@ async def _finalize_session(
             key, mapping={"status": "finished", "finished_at": str(int(time.time()))}
         )
 
-    if not frame_scores:
+    if not frame_details:
         return
 
+    detail_path: str | None = None
+    try:
+        detail_path = await upload_session_detail(session_id, frame_details)
+    except Exception:
+        # 상세 결과 업로드가 실패해도 평균 점수는 남겨야 하므로 종료 처리를
+        # 막지 않는다. detail_path는 None으로 남는다.
+        logger.exception("세션 상세 결과 S3 업로드 실패: session_id=%s", session_id)
+
+    scores = [frame["score"] for frame in frame_details]
     summary = {
-        "average_score": round(sum(frame_scores) / len(frame_scores), 4),
-        "frame_count": len(frame_scores),
-        "detail_path": None,
+        "average_score": round(sum(scores) / len(scores), 4),
+        "frame_count": len(frame_details),
+        "detail_path": detail_path,
     }
     summary_ttl = ttl if ttl and ttl > 0 else settings.redis_session_ttl
     await redis.set(f"{key}:summary", json.dumps(summary), ex=summary_ttl)

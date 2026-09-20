@@ -28,6 +28,23 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def fake_s3_upload(monkeypatch):
+    """세션 상세 결과 S3 업로드를 실제 AWS 호출 없이 흉내낸다.
+
+    호출 기록은 반환된 리스트(session_id, frame_details)에 쌓이므로,
+    업로드 여부/내용을 검증하고 싶은 테스트는 이 픽스처를 인자로 받으면 된다.
+    """
+    calls: list[tuple[str, list[dict]]] = []
+
+    async def _fake_upload(session_id: str, frame_details: list[dict]) -> str:
+        calls.append((session_id, frame_details))
+        return f"reports/{session_id}.json"
+
+    monkeypatch.setattr("app.routers.websocket.upload_session_detail", _fake_upload)
+    return calls
+
+
 def make_reference_sequence(num_frames: int = NUM_FRAMES) -> np.ndarray:
     """33관절 sine-wave 동작 시퀀스. seed_redis용 기준 데이터."""
     t = np.linspace(0, 4 * np.pi, num_frames)
