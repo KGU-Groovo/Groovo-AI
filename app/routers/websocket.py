@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+from collections import deque
+
 import numpy as np
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -11,6 +13,11 @@ from app.services.keypoint_service import (
     NUM_LANDMARKS,
     compute_feedback,
     load_reference_keypoints,
+)
+from app.services.pentagon_scoring_service import (
+    WINDOW_SIZE,
+    score_window,
+    window_has_reference_seam,
 )
 
 router = APIRouter()
@@ -59,6 +66,10 @@ async def analyze_websocket(
     last_feedback: dict | None = None
     last_recv = asyncio.get_event_loop().time()
     warn_sent = False
+    user_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
+    ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
+    ref_idx_window: deque[int] = deque(maxlen=WINDOW_SIZE)
+    processed_frame_count = 0
     try:
         while True:
             try:
@@ -126,6 +137,22 @@ async def analyze_websocket(
                 fps=fps,
             )
             last_feedback = feedback
+            processed_frame_count += 1
+            ref_idx = feedback["frame_idx"] % reference_kp.shape[0]
+            user_kp_window.append(incoming_kp)
+            ref_kp_window.append(reference_kp[ref_idx])
+            ref_idx_window.append(ref_idx)
+            if (
+                len(user_kp_window) == WINDOW_SIZE
+                and processed_frame_count % WINDOW_SIZE == 0
+                and not window_has_reference_seam(list(ref_idx_window), reference_kp.shape[0])
+            ):
+                try:
+                    feedback["pentagon_scores"] = await asyncio.to_thread(
+                        score_window, list(user_kp_window), list(ref_kp_window)
+                    )
+                except Exception:
+                    logger.exception("pentagon 채점 실패: reference_id=%s", reference_id)
             await websocket.send_json(feedback)
 
     except WebSocketDisconnect:
