@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     feedback_threshold_good: float = 0.80
     feedback_threshold_bad: float = 0.60
 
+    # JSON 환경변수 예: {"hollywood-action":{"video_id":1,"keypoint_path":"refs/hollywood.npy"}}
+    reference_keypoints: dict[str, dict[str, int | str]] = {}
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

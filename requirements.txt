@@ -5,3 +5,10 @@ python-jose[cryptography]>=3.3.0
 redis[asyncio]>=5.0.0
 aioboto3>=13.0.0
 numpy>=1.26.0
+pandas
+scikit-learn
+torch
+opencv-python
+mediapipe
+matplotlib
+tqdm

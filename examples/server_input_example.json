@@ -1,0 +1,19 @@
+{
+  "mode": "realtime",
+  "reference_id": "exo_love_shot_f_view",
+  "timestamp_ms": 123456,
+  "incoming_keypoints_shape": [
+    33,
+    3
+  ],
+  "expected_frame_shape": [
+    33,
+    3
+  ],
+  "sequence_shape_for_direct_prediction": [
+    30,
+    33,
+    3
+  ],
+  "note": "Send one MediaPipe Pose frame per request for realtime mode, or send 30 frames for sequence mode."
+}
