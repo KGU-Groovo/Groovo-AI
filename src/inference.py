@@ -4,6 +4,8 @@ import json
 import numpy as np
 import torch
 
+from normalization import normalize_pose_batch
+
 
 def to_jsonable(value):
     """
@@ -118,6 +120,13 @@ def ensure_batch_sequence(seq, device):
     return seq.to(device)
 
 
+def prepare_model_input(seq, device):
+    """입력 검증 후 학습 데이터와 동일한 골반 중심/어깨 너비 정규화를 적용한다."""
+    batch = ensure_batch_sequence(seq, device)
+    normalized = normalize_pose_batch(batch)
+    return torch.from_numpy(normalized).to(device)
+
+
 def score_to_color(score_100, green_threshold=80.0, orange_threshold=60.0):
     """
     점수를 화면 색상으로 변환한다.
@@ -208,6 +217,7 @@ def run_single_inference(
     green_threshold=80.0,
     orange_threshold=60.0,
     top_k=3,
+    normalize_input=False,
 ):
     """
     sample 1개에 대한 추론 함수.
@@ -215,8 +225,9 @@ def run_single_inference(
     현재 모델은 rule-based pseudo label 기반 prototype이다.
     실제 인간 평가 점수를 직접 학습한 모델은 아니다.
     """
-    idol_seq = ensure_batch_sequence(idol_seq, device)
-    user_seq = ensure_batch_sequence(user_seq, device)
+    prepare = prepare_model_input if normalize_input else ensure_batch_sequence
+    idol_seq = prepare(idol_seq, device)
+    user_seq = prepare(user_seq, device)
 
     if idol_seq.shape[0] != 1 or user_seq.shape[0] != 1:
         raise ValueError("run_single_inference는 batch size 1 입력만 받습니다.")
@@ -298,6 +309,7 @@ def run_batch_inference(
     green_threshold=80.0,
     orange_threshold=60.0,
     top_k=3,
+    normalize_input=False,
 ):
     """
     batch 단위 추론 함수.
@@ -306,8 +318,9 @@ def run_batch_inference(
     - idol_batch: (B, 30, 33, 3)
     - user_batch: (B, 30, 33, 3)
     """
-    idol_batch = ensure_batch_sequence(idol_batch, device)
-    user_batch = ensure_batch_sequence(user_batch, device)
+    prepare = prepare_model_input if normalize_input else ensure_batch_sequence
+    idol_batch = prepare(idol_batch, device)
+    user_batch = prepare(user_batch, device)
 
     if idol_batch.shape != user_batch.shape:
         raise ValueError(

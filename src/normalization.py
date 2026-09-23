@@ -126,14 +126,14 @@ def normalize_pose_frame(frame):
 
 def normalize_pose_sequence(seq):
     seq = validate_pose_sequence(seq, name="seq")
+    hip_centers = (seq[:, LEFT_HIP_INDEX] + seq[:, RIGHT_HIP_INDEX]) / 2.0
+    shoulder_widths = np.linalg.norm(
+        seq[:, LEFT_SHOULDER_INDEX] - seq[:, RIGHT_SHOULDER_INDEX], axis=1
+    )
+    valid_widths = shoulder_widths[shoulder_widths > EPS]
+    scale = float(np.median(valid_widths)) if len(valid_widths) else float(EPS)
 
-    normalized_frames = []
-
-    for frame_idx in range(seq.shape[0]):
-        normalized_frame = normalize_pose_frame(seq[frame_idx])
-        normalized_frames.append(normalized_frame)
-
-    return np.stack(normalized_frames, axis=0).astype(np.float32)
+    return ((seq - hip_centers[:, None, :]) / scale).astype(np.float32)
 
 
 def normalize_pose_batch(batch):

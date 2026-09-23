@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import aioboto3
@@ -62,7 +63,13 @@ async def load_reference_keypoints(
     video_id: int,
     keypoint_path: str,
 ) -> np.ndarray:
-    """Redis 캐시 우선, 없으면 S3에서 로드 후 캐시 저장"""
+    """로컬 개발 파일 우선, 그 외에는 Redis 캐시와 S3를 사용한다."""
+    local_path = Path(keypoint_path)
+    if local_path.is_file():
+        arr = np.load(local_path).astype(np.float32)
+        _validate_reference_shape(arr)
+        return arr
+
     cache_key = f"ref_kp:{video_id}"
     cached = await redis.get(cache_key)
 

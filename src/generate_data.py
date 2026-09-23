@@ -3,6 +3,7 @@ import json
 import numpy as np
 
 from normalization import compute_joint_errors, get_topk_highlight_joints
+from normalization import normalize_pose_sequence
 
 
 def create_sliding_windows(sequence, frame_length=30, stride=15):
@@ -48,6 +49,16 @@ def perturb_sequence(idol_seq, error_type, rng):
         delay = int(rng.integers(2, 6))
         user_seq = np.roll(user_seq, shift=delay, axis=0)
         user_seq[:delay] = idol_seq[0]
+        user_seq += rng.normal(0.0, 0.015, size=user_seq.shape).astype(np.float32)
+
+    elif error_type == "timing_fast":
+        source_indices = np.minimum(np.rint(np.arange(30) * 1.15).astype(int), 29)
+        user_seq = idol_seq[source_indices]
+        user_seq += rng.normal(0.0, 0.015, size=user_seq.shape).astype(np.float32)
+
+    elif error_type == "timing_slow":
+        source_indices = np.rint(np.arange(30) * 0.85).astype(int)
+        user_seq = idol_seq[source_indices]
         user_seq += rng.normal(0.0, 0.015, size=user_seq.shape).astype(np.float32)
 
     elif error_type == "left_arm_low":
@@ -108,6 +119,8 @@ def compute_score_from_error(joint_errors, error_type):
         "noise_small": 92.0,
         "noise_large": 78.0,
         "timing_delay": 76.0,
+        "timing_fast": 76.0,
+        "timing_slow": 76.0,
         "left_arm_low": 74.0,
         "right_arm_low": 74.0,
         "leg_shift": 72.0,
@@ -118,7 +131,8 @@ def compute_score_from_error(joint_errors, error_type):
 
     # rule-based pseudo score
     # 실제 사람이 매긴 점수가 아니라, 기준 안무와 fake user의 차이로 만든 임시 라벨임
-    score = base - mean_error * 120.0 - max_error * 25.0
+    # 정규화된 좌표의 오차 단위에 맞춘 벌점이다.
+    score = base - mean_error * 12.0 - max_error * 1.5
     score = float(np.clip(score, 0.0, 100.0))
 
     return score
@@ -144,6 +158,8 @@ def generate_synthetic_dataset_from_windows(idol_windows, variants_per_window=8,
         "noise_small",
         "noise_large",
         "timing_delay",
+        "timing_fast",
+        "timing_slow",
         "left_arm_low",
         "right_arm_low",
         "leg_shift",
@@ -164,12 +180,14 @@ def generate_synthetic_dataset_from_windows(idol_windows, variants_per_window=8,
             error_type = error_types[variant_idx % len(error_types)]
 
             user_seq = perturb_sequence(idol_seq, error_type=error_type, rng=rng)
-            joint_errors = compute_joint_errors(idol_seq, user_seq)
+            normalized_idol = normalize_pose_sequence(idol_seq)
+            normalized_user = normalize_pose_sequence(user_seq)
+            joint_errors = compute_joint_errors(normalized_idol, normalized_user)
             highlight_joints = get_topk_highlight_joints(joint_errors, top_k=3)
             score = compute_score_from_error(joint_errors, error_type)
 
-            idol_seqs.append(idol_seq)
-            user_seqs.append(user_seq)
+            idol_seqs.append(normalized_idol)
+            user_seqs.append(normalized_user)
             scores.append(score)
             joint_errors_all.append(joint_errors)
             highlight_joints_all.append(highlight_joints)
@@ -192,6 +210,31 @@ def generate_synthetic_dataset_from_windows(idol_windows, variants_per_window=8,
         "highlight_joints": np.asarray(highlight_joints_all, dtype=np.int64),
         "metadata": metadata,
     }
+
+
+def build_dataset_from_reference(reference_path, output_path, variants_per_window=10, seed=42):
+    """기준 포즈 ``.npy``를 학습용 ``.npz``와 메타데이터 JSON으로 변환한다."""
+    reference = np.load(Path(reference_path)).astype(np.float32)
+    windows = create_sliding_windows(reference)
+    dataset = generate_synthetic_dataset_from_windows(
+        windows, variants_per_window=variants_per_window, seed=seed
+    )
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        idol_seqs=dataset["idol_seqs"],
+        user_seqs=dataset["user_seqs"],
+        scores=dataset["scores"],
+        joint_errors=dataset["joint_errors"],
+        highlight_joints=dataset["highlight_joints"],
+    )
+    metadata_path = output_path.with_name(f"{output_path.stem}_metadata.json")
+    metadata_path.write_text(
+        json.dumps(dataset["metadata"], ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return metadata_path
 
 
 def save_synthetic_dataset(dataset, output_dir):

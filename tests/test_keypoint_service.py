@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
-from app.services.keypoint_service import KEYPOINT_DIM, NUM_LANDMARKS, compute_feedback
+from app.services.keypoint_service import (
+    KEYPOINT_DIM,
+    NUM_LANDMARKS,
+    compute_feedback,
+    load_reference_keypoints,
+)
 
 FPS = 30.0
 
@@ -64,3 +70,18 @@ def test_frame_idx_has_no_rounding_jitter_at_steady_30fps():
 
     diffs = [b - a for a, b in zip(frame_indices, frame_indices[1:])]
     assert all(d == 1 for d in diffs), f"프레임 인덱스가 1씩 증가하지 않음: {diffs[:20]}..."
+
+
+@pytest.mark.asyncio
+async def test_load_reference_keypoints_uses_an_existing_local_npy_before_redis(tmp_path):
+    reference = _make_reference(num_frames=2)
+    local_reference = tmp_path / "reference.npy"
+    np.save(local_reference, reference)
+
+    class RedisMustNotBeUsed:
+        async def get(self, _key):
+            raise AssertionError("local reference must be loaded before Redis")
+
+    loaded = await load_reference_keypoints(RedisMustNotBeUsed(), 1, str(local_reference))
+
+    assert np.array_equal(loaded, reference)

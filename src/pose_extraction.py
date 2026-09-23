@@ -49,7 +49,10 @@ def create_pose_landmarker(model_path):
     if not model_path.exists():
         raise FileNotFoundError(f"PoseLandmarker model file not found: {model_path}")
 
-    base_options = python.BaseOptions(model_asset_path=str(model_path))
+    base_options = python.BaseOptions(
+        model_asset_path=str(model_path),
+        delegate=python.BaseOptions.Delegate.CPU,
+    )
 
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
@@ -75,6 +78,12 @@ def extract_pose33_from_image(image_path, detector):
     if image_bgr is None:
         raise ValueError(f"cv2 failed to read image: {image_path}")
 
+    return extract_pose33_from_bgr_frame(image_bgr, detector)
+
+
+def extract_pose33_from_bgr_frame(image_bgr, detector):
+    """BGR 비디오 프레임 하나에서 MediaPipe Pose 33개 좌표를 추출한다."""
+
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
     mp_image = mp.Image(
@@ -98,6 +107,70 @@ def extract_pose33_from_image(image_path, detector):
     )
 
     return pose
+
+
+def extract_pose33_from_video(video_path, model_path=None, sample_every=1):
+    """영상에서 유효한 Pose 프레임을 순서대로 추출한다."""
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(f"video file does not exist: {video_path}")
+    if sample_every < 1:
+        raise ValueError("sample_every must be at least 1")
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise ValueError(f"cv2 failed to open video: {video_path}")
+
+    poses = []
+    skipped_frames = []
+    frame_index = 0
+    if hasattr(mp, "solutions"):
+        detector = mp.solutions.pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if frame_index % sample_every == 0:
+                    result = detector.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    if result.pose_landmarks is None:
+                        skipped_frames.append(frame_index)
+                    else:
+                        poses.append(np.array(
+                            [[lm.x, lm.y, lm.z] for lm in result.pose_landmarks.landmark],
+                            dtype=np.float32,
+                        ))
+                frame_index += 1
+        finally:
+            capture.release()
+            detector.close()
+    else:
+        detector = create_pose_landmarker(model_path)
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if frame_index % sample_every == 0:
+                    pose = extract_pose33_from_bgr_frame(frame, detector)
+                    if pose is None:
+                        skipped_frames.append(frame_index)
+                    else:
+                        poses.append(pose)
+                frame_index += 1
+        finally:
+            capture.release()
+            detector.close()
+
+    if len(poses) < 30:
+        raise ValueError(f"성공한 pose frame이 30개보다 적습니다: {len(poses)}")
+    return np.stack(poses, axis=0).astype(np.float32), skipped_frames
 
 
 def extract_pose33_from_image_folder(image_dir, model_path, max_frames=None):

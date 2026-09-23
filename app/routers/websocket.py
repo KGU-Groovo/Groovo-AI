@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.config import settings
 from app.redis_client import get_redis
+from app.services.dca_model_service import get_dca_model_runner
 from app.services.keypoint_service import (
     KEYPOINT_DIM,
     NUM_LANDMARKS,
@@ -59,6 +60,7 @@ async def analyze_websocket(
         return
 
     await websocket.send_json({"status": "ready", "video_id": video_id})
+    dca_model = get_dca_model_runner()
 
     warn_sec = _WARN_SEC
     pause_sec = _PAUSE_SEC
@@ -136,6 +138,7 @@ async def analyze_websocket(
                 timestamp_ms=timestamp_ms,
                 fps=fps,
             )
+            instant_score = feedback["score"]
             last_feedback = feedback
             processed_frame_count += 1
             ref_idx = feedback["frame_idx"] % reference_kp.shape[0]
@@ -151,8 +154,22 @@ async def analyze_websocket(
                     feedback["pentagon_scores"] = await asyncio.to_thread(
                         score_window, list(user_kp_window), list(ref_kp_window)
                     )
+                    accuracy_score = feedback["pentagon_scores"]["scores"]["accuracy"]
+                    feedback["pentagon_scores"]["final_score"] = accuracy_score
+                    feedback["score"] = accuracy_score / 100.0
                 except Exception:
                     logger.exception("pentagon 채점 실패: reference_id=%s", reference_id)
+                if dca_model is not None:
+                    try:
+                        dca_result = await asyncio.to_thread(
+                            dca_model.predict,
+                            np.stack(ref_kp_window),
+                            np.stack(user_kp_window),
+                        )
+                        feedback["rule_score"] = instant_score
+                        feedback["dca"] = dca_result["frontend_payload"]
+                    except Exception:
+                        logger.exception("DCA 추론 실패: reference_id=%s", reference_id)
             await websocket.send_json(feedback)
 
     except WebSocketDisconnect:

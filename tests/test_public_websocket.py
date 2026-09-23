@@ -53,4 +53,39 @@ def test_analyze_websocket_returns_pentagon_scores_after_30_valid_frames(monkeyp
                 socket.send_json({"keypoints": np.ones((33, 3)).tolist(), "frame_idx": frame_idx})
                 feedback = socket.receive_json()
 
-    assert feedback["pentagon_scores"] == {"final_score": 91.2, "scores": {"accuracy": 90.0}}
+    assert feedback["pentagon_scores"] == {"final_score": 90.0, "scores": {"accuracy": 90.0}}
+    assert feedback["score"] == 0.9
+    assert feedback["pentagon_scores"]["final_score"] == 90.0
+
+
+def test_analyze_websocket_uses_dca_score_after_a_full_window(monkeypatch):
+    class FakeDcaModel:
+        def predict(self, reference_window, user_window):
+            assert reference_window.shape == (30, 33, 3)
+            assert user_window.shape == (30, 33, 3)
+            return {
+                "score_norm": 0.87,
+                "frontend_payload": {"score_100": 87.0, "highlight_joints": [11, 13, 15]},
+            }
+
+    async def load_reference_keypoints(_redis, _video_id, _keypoint_path):
+        return np.ones((60, 33, 3), dtype=np.float32)
+
+    monkeypatch.setattr(
+        settings,
+        "reference_keypoints",
+        {"hollywood-action": {"video_id": 1, "keypoint_path": "refs/hollywood.npy"}},
+    )
+    monkeypatch.setattr(websocket_router, "load_reference_keypoints", load_reference_keypoints)
+    monkeypatch.setattr(websocket_router, "get_dca_model_runner", lambda: FakeDcaModel())
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/analyze?reference_id=hollywood-action") as socket:
+            socket.receive_json()
+            for frame_idx in range(30):
+                socket.send_json({"keypoints": np.ones((33, 3)).tolist(), "frame_idx": frame_idx})
+                feedback = socket.receive_json()
+
+    assert feedback["score"] == 1.0
+    assert feedback["rule_score"] == 1.0
+    assert feedback["dca"] == {"score_100": 87.0, "highlight_joints": [11, 13, 15]}

@@ -88,6 +88,58 @@ def load_dca_npz_dataset(npz_path):
     }
 
 
+def combine_dca_npz_datasets(npz_paths):
+    """여러 곡의 NPZ를 합치고, 각 샘플의 곡 ID를 함께 반환한다."""
+    npz_paths = [Path(path) for path in npz_paths]
+    if not npz_paths:
+        raise ValueError("합칠 NPZ 파일이 없습니다.")
+
+    datasets = [load_dca_npz_dataset(path) for path in npz_paths]
+    keys = ["idol_seqs", "user_seqs", "scores", "joint_errors", "highlight_joints"]
+    data = {key: np.concatenate([dataset[key] for dataset in datasets], axis=0) for key in keys}
+    group_ids = [
+        path.stem
+        for path, dataset in zip(npz_paths, datasets)
+        for _ in range(len(dataset["scores"]))
+    ]
+    return data, group_ids
+
+
+def create_group_split_indices(
+    group_ids,
+    train_ratio=0.7,
+    valid_ratio=0.15,
+    test_ratio=0.15,
+    seed=42,
+):
+    """같은 기준 곡의 모든 합성 샘플을 하나의 split에만 넣는다."""
+    if abs(train_ratio + valid_ratio + test_ratio - 1.0) > 1e-6:
+        raise ValueError("split ratio 합은 1이어야 합니다.")
+
+    unique_groups = np.array(sorted(set(group_ids)))
+    if len(unique_groups) < 3:
+        raise ValueError("곡 단위 train / valid / test 분할에는 최소 3곡이 필요합니다.")
+
+    rng = np.random.default_rng(seed)
+    rng.shuffle(unique_groups)
+    train_count = max(int(len(unique_groups) * train_ratio), 1)
+    valid_count = max(int(len(unique_groups) * valid_ratio), 1)
+    test_count = len(unique_groups) - train_count - valid_count
+    if test_count < 1:
+        train_count -= 1
+        test_count = 1
+
+    group_splits = {
+        "train": set(unique_groups[:train_count]),
+        "valid": set(unique_groups[train_count:train_count + valid_count]),
+        "test": set(unique_groups[train_count + valid_count:]),
+    }
+    return {
+        f"{name}_indices": [index for index, group_id in enumerate(group_ids) if group_id in groups]
+        for name, groups in group_splits.items()
+    }
+
+
 class DanceDCADataset(Dataset):
     """
     DCA-Net 학습 전용 Dataset.
