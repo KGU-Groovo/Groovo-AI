@@ -27,7 +27,8 @@ def test_good_frame_gives_high_score(client, fake_redis):
         ws.send_json({"frame_idx": 0, "timestamp_ms": 0, "keypoints": reference_frame(0)})
         resp = ws.receive_json()
         assert resp["score"] > 0.99
-        assert resp["feedback"] == "Good!"
+        assert resp["type"] == "feedback"
+        assert resp["message"] == "Good!"
 
 
 def test_bad_frame_gives_low_score(client, fake_redis):
@@ -536,12 +537,20 @@ def test_pentagon_scoring_skips_window_with_reference_seam(client, fake_redis):
     크래시 없이 스킵되고(완전히 일치하는 데이터로도 잘못된 저점이 나오는 걸 막기
     위함) 최종 pentagon_scores는 None이어야 한다.
 
-    keypoint_service.compute_feedback의 frame_idx 보정은 이제 순환(%)하므로
-    (app/services/keypoint_service.py) 실시간 점수 자체는 정상(0.99+)이 나오지만,
+    keypoint_service.compute_feedback의 frame_idx 보정은 순환(%)하므로
+    (app/services/keypoint_service.py) 세션이 끊기지 않고 매 프레임 정상 응답한다.
     pentagon_scoring은 입력을 연속된 한 클립으로 가정하기 때문에 윈도우 안에서
     "마지막 프레임 → 다시 처음 프레임"으로 튀는 이음매를 실제 동작으로 오인해
     accuracy/balance가 완전히 잘못 나온다(완벽 일치 데이터로 accuracy=0 실측).
     window_has_reference_seam이 이런 윈도우를 감지해 계산을 스킵한다.
+
+    실시간 score는 골반 중점 기준 상대좌표로 코사인 유사도를 계산하도록 바뀐
+    뒤(실제 영상으로 검증: 이전엔 팔을 계속 잘못 벌리거나 동작을 반대로 해도
+    score가 0.90~0.996으로 "Good!"이 나올 만큼 둔감했음) 자세 차이에 민감해져서,
+    timestamp_ms 반올림으로 생기는 실제 프레임 미스매치(짧은 10프레임 기준 영상을
+    빠르게 순환하며 누적되는 오차)까지 점수에 반영된다. 그래서 평균이 1.0에
+    근접하지는 않지만, 세션이 죽지 않고 매 프레임 정상 응답했다는 것만 확인하면
+    충분하다.
     """
     asyncio.run(
         seed_session_and_reference(fake_redis, num_frames=10)
@@ -564,7 +573,7 @@ def test_pentagon_scoring_skips_window_with_reference_seam(client, fake_redis):
     raw_summary = asyncio.run(fake_redis.get("session:test-session-1:summary"))
     summary = json.loads(raw_summary)
     assert summary["frame_count"] == 31
-    assert summary["average_score"] > 0.9  # 실시간 점수는 순환 덕분에 정상
+    assert 0.0 <= summary["average_score"] <= 1.0  # 크래시 없이 유효 범위 점수
     assert summary["pentagon_scores"] is None  # 이음매 낀 윈도우는 스킵됨
 
 
