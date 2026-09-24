@@ -9,6 +9,7 @@ import numpy as np
 import redis.asyncio as aioredis
 
 from app.config import settings
+from src.normalization import normalize_pose_frame
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 NUM_LANDMARKS = 33
 KEYPOINT_DIM = 3
 TIME_ALIGNMENT_WINDOW_FRAMES = 6
+MIN_POSE_SCALE = 1e-6
 
 
 async def _load_from_s3(keypoint_path: str) -> np.ndarray:
@@ -112,6 +114,14 @@ def _cosine_similarity(reference_frame: np.ndarray, incoming: np.ndarray) -> flo
     )
 
 
+def _comparison_pose_pair(reference_frame: np.ndarray, incoming: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    reference_width = np.linalg.norm(reference_frame[11] - reference_frame[12])
+    incoming_width = np.linalg.norm(incoming[11] - incoming[12])
+    if reference_width < MIN_POSE_SCALE or incoming_width < MIN_POSE_SCALE:
+        return reference_frame, incoming
+    return normalize_pose_frame(reference_frame), normalize_pose_frame(incoming)
+
+
 def compute_feedback(
     reference: np.ndarray,
     incoming: np.ndarray,
@@ -153,12 +163,14 @@ def compute_feedback(
     # 기준 시점을 먼저 넣어 동점인 정지 포즈에서는 원래 재생 위치를 유지한다.
     frame_idx = max(
         candidate_frame_indices,
-        key=lambda candidate_idx: _cosine_similarity(reference[candidate_idx], incoming),
+        key=lambda candidate_idx: _cosine_similarity(
+            *_comparison_pose_pair(reference[candidate_idx], incoming)
+        ),
     )
-    ref_frame = reference[frame_idx]
+    ref_frame, normalized_incoming = _comparison_pose_pair(reference[frame_idx], incoming)
 
     ref_coords = ref_frame   # (33, 3) [x, y, z]
-    inc_coords = incoming    # (33, 3) [x, y, z]
+    inc_coords = normalized_incoming
 
     # 코사인 유사도
     cos_sim = _cosine_similarity(ref_coords, inc_coords)

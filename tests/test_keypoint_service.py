@@ -91,6 +91,22 @@ def test_feedback_aligns_to_the_nearest_matching_reference_frame():
     assert result["score"] > 0.99
 
 
+def test_feedback_ignores_camera_translation_and_body_scale():
+    pose = np.zeros((NUM_LANDMARKS, KEYPOINT_DIM), dtype=np.float32)
+    pose[11, 0] = -1.0
+    pose[12, 0] = 1.0
+    pose[23, 0] = -0.5
+    pose[24, 0] = 0.5
+    pose[15, 1] = 0.7
+    reference = np.repeat(pose[None, ...], 9, axis=0)
+
+    # 같은 포즈를 더 멀리서 찍고 카메라 위치가 달라도 만점에 가까워야 한다.
+    incoming = pose * 1.8 + np.array([4.0, -3.0, 0.5], dtype=np.float32)
+    result = compute_feedback(reference, incoming, frame_idx=0)
+
+    assert result["score"] > 0.99
+
+
 @pytest.mark.asyncio
 async def test_load_reference_keypoints_uses_an_existing_local_npy_before_redis(tmp_path):
     reference = _make_reference(num_frames=2)
