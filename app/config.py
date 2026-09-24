@@ -30,9 +30,9 @@ class Settings(BaseSettings):
         "its-me": {"video_id": 3, "keypoint_path": "data/references/its-me.npy", "fps": 30},
         "wda": {"video_id": 4, "keypoint_path": "data/references/wda.npy", "fps": 30},
     }
-    dca_checkpoint_path: str = "artifacts/training-normalized/checkpoints/best.pt"
+    dca_checkpoint_path: str = "artifacts/training-ranking/checkpoints/best.pt"
     dca_device: str = "auto"
-    dca_normalize_input: bool = False
+    dca_normalize_input: bool = True
 
     model_config = SettingsConfigDict(env_file=".env")
 

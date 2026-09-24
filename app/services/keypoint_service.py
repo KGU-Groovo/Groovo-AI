@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # MediaPipe Pose 기준: 33 landmarks × [x, y, z]
 NUM_LANDMARKS = 33
 KEYPOINT_DIM = 3
+TIME_ALIGNMENT_WINDOW_FRAMES = 6
 
 
 async def _load_from_s3(keypoint_path: str) -> np.ndarray:
@@ -102,6 +103,15 @@ def _validate_reference_shape(arr: np.ndarray) -> None:
         raise ValueError(f"reference keypoints shape이 올바르지 않습니다: {arr.shape}")
 
 
+def _cosine_similarity(reference_frame: np.ndarray, incoming: np.ndarray) -> float:
+    reference_flat = reference_frame.flatten()
+    incoming_flat = incoming.flatten()
+    return float(
+        np.dot(reference_flat, incoming_flat)
+        / (np.linalg.norm(reference_flat) * np.linalg.norm(incoming_flat) + 1e-8)
+    )
+
+
 def compute_feedback(
     reference: np.ndarray,
     incoming: np.ndarray,
@@ -129,18 +139,29 @@ def compute_feedback(
     if timestamp_ms is not None:
         frame_idx = round(timestamp_ms * fps / 1000) % num_frames
 
-    ref_frame = reference[frame_idx % num_frames]
+    expected_frame_idx = frame_idx % num_frames
+    candidate_frame_indices = [expected_frame_idx]
+    for offset in range(1, TIME_ALIGNMENT_WINDOW_FRAMES + 1):
+        candidate_frame_indices.extend(
+            [
+                (expected_frame_idx - offset) % num_frames,
+                (expected_frame_idx + offset) % num_frames,
+            ]
+        )
+
+    # 카메라/포즈 추론 지연은 짧은 구간의 동작 시점 차이로 나타난다.
+    # 기준 시점을 먼저 넣어 동점인 정지 포즈에서는 원래 재생 위치를 유지한다.
+    frame_idx = max(
+        candidate_frame_indices,
+        key=lambda candidate_idx: _cosine_similarity(reference[candidate_idx], incoming),
+    )
+    ref_frame = reference[frame_idx]
 
     ref_coords = ref_frame   # (33, 3) [x, y, z]
     inc_coords = incoming    # (33, 3) [x, y, z]
 
     # 코사인 유사도
-    ref_flat = ref_coords.flatten()
-    inc_flat = inc_coords.flatten()
-    cos_sim = float(
-        np.dot(ref_flat, inc_flat)
-        / (np.linalg.norm(ref_flat) * np.linalg.norm(inc_flat) + 1e-8)
-    )
+    cos_sim = _cosine_similarity(ref_coords, inc_coords)
 
     # 관절별 거리 오차 (정규화된 좌표 기준)
     joint_errors = np.linalg.norm(ref_coords - inc_coords, axis=1)

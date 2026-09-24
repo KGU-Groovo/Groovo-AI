@@ -72,6 +72,25 @@ def test_frame_idx_has_no_rounding_jitter_at_steady_30fps():
     assert all(d == 1 for d in diffs), f"프레임 인덱스가 1씩 증가하지 않음: {diffs[:20]}..."
 
 
+def test_feedback_aligns_to_the_nearest_matching_reference_frame():
+    reference = np.zeros((9, NUM_LANDMARKS, KEYPOINT_DIM), dtype=np.float32)
+    reference[3].fill(1.0)
+    reference[5].fill(-1.0)
+
+    # 재생 시점은 5번 프레임이지만, 사용자는 약 2프레임 늦은 3번 포즈를 하고 있다.
+    timestamp_ms = round(5 * 1000 / FPS)
+    result = compute_feedback(
+        reference,
+        reference[3],
+        frame_idx=0,
+        timestamp_ms=timestamp_ms,
+        fps=FPS,
+    )
+
+    assert result["frame_idx"] == 3
+    assert result["score"] > 0.99
+
+
 @pytest.mark.asyncio
 async def test_load_reference_keypoints_uses_an_existing_local_npy_before_redis(tmp_path):
     reference = _make_reference(num_frames=2)

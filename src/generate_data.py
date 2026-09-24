@@ -112,30 +112,8 @@ def compute_score_from_error(joint_errors, error_type):
     joint_errors = np.asarray(joint_errors, dtype=np.float32)
 
     mean_error = float(joint_errors.mean())
-    max_error = float(joint_errors.max())
-
-    base_score_by_type = {
-        "clean": 98.0,
-        "noise_small": 92.0,
-        "noise_large": 78.0,
-        "timing_delay": 76.0,
-        "timing_fast": 76.0,
-        "timing_slow": 76.0,
-        "left_arm_low": 74.0,
-        "right_arm_low": 74.0,
-        "leg_shift": 72.0,
-        "upper_body_shift": 75.0,
-    }
-
-    base = base_score_by_type.get(error_type, 80.0)
-
-    # rule-based pseudo score
-    # 실제 사람이 매긴 점수가 아니라, 기준 안무와 fake user의 차이로 만든 임시 라벨임
-    # 정규화된 좌표의 오차 단위에 맞춘 벌점이다.
-    score = base - mean_error * 12.0 - max_error * 1.5
-    score = float(np.clip(score, 0.0, 100.0))
-
-    return score
+    # 오류 유형 이름이 아니라, 기준 안무와의 실제 정규화 관절 거리만 사용한다.
+    return float(100.0 * np.exp(-0.5 * mean_error))
 
 
 def generate_synthetic_dataset_from_windows(idol_windows, variants_per_window=8, seed=42):

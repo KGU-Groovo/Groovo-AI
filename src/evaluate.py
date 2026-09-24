@@ -97,6 +97,16 @@ def compute_score_metrics(pred_score_norm, target_score_norm):
     if target_std > 0.0 and pred_std < target_std * 0.3:
         mean_prediction_warning = True
 
+    target_diff = target_norm[:, None] - target_norm[None, :]
+    target_order_mask = target_diff > 1e-6
+    if not np.any(target_order_mask):
+        pairwise_ordering_accuracy = None
+    else:
+        pred_diff = pred_norm[:, None] - pred_norm[None, :]
+        pairwise_ordering_accuracy = float(
+            np.mean(pred_diff[target_order_mask] > 0.0)
+        )
+
     return {
         "mae": mae,
         "rmse": rmse,
@@ -113,6 +123,7 @@ def compute_score_metrics(pred_score_norm, target_score_norm):
         "target_score_100_min": float(np.min(target_100)),
         "target_score_100_max": float(np.max(target_100)),
         "target_score_100_range": float(np.max(target_100) - np.min(target_100)),
+        "pairwise_ordering_accuracy": pairwise_ordering_accuracy,
         "mean_prediction_warning": mean_prediction_warning,
     }
 

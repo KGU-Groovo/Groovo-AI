@@ -47,7 +47,7 @@ def test_normalized_error_score_keeps_small_errors_in_a_usable_score_range():
         np.full(33, 1.55, dtype=np.float32), "noise_large"
     )
 
-    assert 65.0 <= small_error_score <= 90.0
+    assert 65.0 <= small_error_score <= 80.0
     assert small_error_score > large_error_score
 
 

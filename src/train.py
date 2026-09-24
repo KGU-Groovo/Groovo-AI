@@ -9,6 +9,16 @@ import torch.optim as optim
 from tqdm.auto import tqdm
 
 
+def compute_pairwise_ranking_loss(pred_score_norm, target_score_norm, margin=0.0):
+    """정답 품질 순서와 반대인 예측 쌍에만 벌점을 준다."""
+    target_diff = target_score_norm[:, None] - target_score_norm[None, :]
+    mask = target_diff > 1e-6
+    if not torch.any(mask):
+        return pred_score_norm.new_zeros(())
+    pred_diff = pred_score_norm[:, None] - pred_score_norm[None, :]
+    return torch.relu(float(margin) - pred_diff[mask]).mean()
+
+
 def move_batch_to_device(batch, device):
     """
     batch dict 안의 tensor들을 device로 이동한다.
@@ -30,6 +40,7 @@ def compute_losses(
     score_loss_fn,
     joint_loss_fn,
     joint_loss_weight=0.2,
+    ranking_loss_weight=0.15,
 ):
     """
     score loss와 joint error loss를 함께 계산한다.
@@ -45,13 +56,15 @@ def compute_losses(
 
     score_loss = score_loss_fn(pred_score_norm, target_score_norm)
     joint_loss = joint_loss_fn(pred_joint_errors, target_joint_errors)
+    ranking_loss = compute_pairwise_ranking_loss(pred_score_norm, target_score_norm)
 
-    total_loss = score_loss + joint_loss_weight * joint_loss
+    total_loss = score_loss + joint_loss_weight * joint_loss + ranking_loss_weight * ranking_loss
 
     return {
         "total_loss": total_loss,
         "score_loss": score_loss,
         "joint_loss": joint_loss,
+        "ranking_loss": ranking_loss,
     }
 
 
