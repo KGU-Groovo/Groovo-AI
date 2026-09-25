@@ -134,3 +134,18 @@ def test_score_window_survives_realistic_noise_without_crashing():
         assert 0 <= result["final_score"] <= 100
         for score in result["scores"].values():
             assert 0 <= score <= 100
+
+
+def test_score_window_corrects_different_camera_aspect_ratios():
+    reference = _skeleton_sequence()
+    hip_center = 0.5 * (reference[:, 23:24] + reference[:, 24:25])
+    user = hip_center + (reference - hip_center) * np.array([0.82, 1.0, 1.0], dtype=np.float32)
+
+    result = score_window(
+        list(user),
+        list(reference),
+        user_aspect_ratio=1 / 0.82,
+        reference_aspect_ratio=1.0,
+    )
+
+    assert result["scores"]["accuracy"] > 99.0

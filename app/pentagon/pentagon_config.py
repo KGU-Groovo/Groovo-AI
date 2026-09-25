@@ -73,7 +73,7 @@ class PentagonConfig:
     max_lag_frames: int = 5
     minimum_aligned_frames: int = 15
     timing_penalty_per_frame: float = 5.0
-    accuracy_scale: float = 300.0
+    accuracy_scale: float = 0.3
     rhythm_mae_scale: float = 25.0
 
     rhythm_correlation_weight: float = 0.60
@@ -153,4 +153,3 @@ class PentagonConfig:
             raise ValueError("accuracy_joint_weights must all be >= 0")
         if not any(weight > 0 for weight in self.accuracy_joint_weights):
             raise ValueError("accuracy_joint_weights must contain a positive value")
-

@@ -117,7 +117,7 @@ def compute_accuracy_score(
     Distances are ``sqrt(dx^2 + dy^2 + z_weight*dz^2)`` when z is enabled,
     otherwise ``sqrt(dx^2 + dy^2)``.  The configured 33 joint weights produce
     a weighted mean error, and the score is
-    ``clip(100 - weighted_mean_error * accuracy_scale, 0, 100)``.
+    ``100 * exp(-weighted_mean_error * accuracy_scale)``.
     ``accuracy_scale`` and joint weights are MVP calibration values requiring
     adjustment with real user videos and human ratings.
     """
@@ -193,7 +193,7 @@ def compute_accuracy_score(
         for index in worst_indices
     ]
     score = clip_score(
-        100.0 - weighted_mean_error * float(active_config.accuracy_scale)
+        100.0 * np.exp(-weighted_mean_error * float(active_config.accuracy_scale))
     )
 
     diagnostics = AccuracyDiagnostics(

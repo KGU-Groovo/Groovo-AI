@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 
 from app.pentagon.pentagon_config import PentagonConfig
+from app.pentagon.score_accuracy import compute_accuracy_score
 from app.pentagon.pentagon_scores import (
     PENTAGON_SCORE_NAMES,
     PENTAGON_SCORE_WEIGHTS,
@@ -77,6 +78,27 @@ def make_pose(
     pose[:, 28, 0] -= 0.06 * values
 
     return pose
+
+
+def test_accuracy_ignores_cross_device_depth_scale():
+    reference = make_pose()
+    user = reference.copy()
+    user[:, 15, 2] += 2.0
+
+    result = compute_pentagon_scores(user, reference)
+
+    assert result.scores.accuracy == 100.0
+    assert result.component_results["accuracy"]["diagnostics"]["use_z"] is False
+
+
+def test_accuracy_uses_continuous_decay_instead_of_zero_cutoff():
+    reference = np.zeros((30, 33, 3), dtype=np.float32)
+    user = reference.copy()
+    user[:, :, 0] = 1.0
+
+    result = compute_accuracy_score(user, reference, PentagonConfig(use_z=False))
+
+    assert abs(result.score - 74.0818) < 1e-4
 
 
 def delayed(

@@ -7,6 +7,7 @@ from dataclasses import (
     dataclass,
     fields,
     is_dataclass,
+    replace,
 )
 import math
 from numbers import Real
@@ -434,7 +435,7 @@ def compute_pentagon_scores(
         compute_accuracy_score(
             aligned_user,
             aligned_idol,
-            active_config,
+            replace(active_config, use_z=False),
             top_k=selected_top_k,
         )
     )

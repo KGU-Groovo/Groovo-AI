@@ -24,12 +24,12 @@ class Settings(BaseSettings):
     feedback_threshold_bad: float = 0.60
 
     # 로컬 개발용 기준 안무. 배포에서는 S3 key를 REFERENCE_KEYPOINTS로 덮어쓴다.
-    reference_keypoints: dict[str, dict[str, int | str]] = {
-        "hollywood-action": {"video_id": 1, "keypoint_path": "data/references/hollywood-action.npy", "fps": 30},
-        "rude": {"video_id": 2, "keypoint_path": "data/references/rude.npy", "fps": 30},
-        "its-me": {"video_id": 3, "keypoint_path": "data/references/its-me.npy", "fps": 30},
-        "wda": {"video_id": 4, "keypoint_path": "data/references/wda.npy", "fps": 30},
-        "bad": {"video_id": 5, "keypoint_path": "data/references/bad.npy", "fps": 30},
+    reference_keypoints: dict[str, dict[str, int | float | str]] = {
+        "hollywood-action": {"video_id": 1, "keypoint_path": "data/references/hollywood-action.npy", "fps": 30, "aspect_ratio": 854 / 480},
+        "rude": {"video_id": 2, "keypoint_path": "data/references/rude.npy", "fps": 30, "aspect_ratio": 854 / 480},
+        "its-me": {"video_id": 3, "keypoint_path": "data/references/its-me.npy", "fps": 30, "aspect_ratio": 854 / 480},
+        "wda": {"video_id": 4, "keypoint_path": "data/references/wda.npy", "fps": 30, "aspect_ratio": 854 / 480},
+        "bad": {"video_id": 5, "keypoint_path": "data/references/bad.npy", "fps": 30, "aspect_ratio": 402 / 720},
     }
     dca_checkpoint_path: str = "artifacts/training-ranking/checkpoints/best.pt"
     dca_device: str = "auto"

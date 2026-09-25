@@ -44,6 +44,12 @@ async def analyze_websocket(
         video_id = int(reference["video_id"])
         keypoint_path = str(reference["keypoint_path"])
         fps = float(reference.get("fps", 30.0))
+        aspect_ratio = reference.get("aspect_ratio")
+        reference_aspect_ratio = None if aspect_ratio is None else float(aspect_ratio)
+        if reference_aspect_ratio is not None and (
+            not np.isfinite(reference_aspect_ratio) or reference_aspect_ratio <= 0
+        ):
+            raise ValueError("aspect_ratio must be positive")
     except (KeyError, TypeError, ValueError):
         await websocket.send_json({"error": "reference 설정이 올바르지 않습니다"})
         await websocket.close(code=4004)
@@ -112,6 +118,14 @@ async def analyze_websocket(
 
             frame_idx: int = message.get("frame_idx", 0)
             timestamp_ms: int | None = message.get("timestamp_ms")
+            camera_aspect_ratio = message.get("camera_aspect_ratio")
+            if (
+                isinstance(camera_aspect_ratio, bool)
+                or not isinstance(camera_aspect_ratio, (int, float))
+                or not np.isfinite(camera_aspect_ratio)
+                or camera_aspect_ratio <= 0
+            ):
+                camera_aspect_ratio = None
             raw_kp: list = message.get("keypoints")  # shape: (33, 3)
 
             if raw_kp is None:
@@ -151,9 +165,10 @@ async def analyze_websocket(
                 and not window_has_reference_seam(list(ref_idx_window), reference_kp.shape[0])
             ):
                 try:
-                    feedback["pentagon_scores"] = await asyncio.to_thread(
-                        score_window, list(user_kp_window), list(ref_kp_window)
-                    )
+                    score_args = (list(user_kp_window), list(ref_kp_window))
+                    if camera_aspect_ratio is not None and reference_aspect_ratio is not None:
+                        score_args += (float(camera_aspect_ratio), reference_aspect_ratio)
+                    feedback["pentagon_scores"] = await asyncio.to_thread(score_window, *score_args)
                     accuracy_score = feedback["pentagon_scores"]["scores"]["accuracy"]
                     feedback["pentagon_scores"]["final_score"] = accuracy_score
                     feedback["score"] = accuracy_score / 100.0

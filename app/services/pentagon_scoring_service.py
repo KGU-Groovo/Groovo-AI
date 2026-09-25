@@ -1,10 +1,6 @@
-import logging
-
 import numpy as np
 
 from app.pentagon.pentagon_scores import PENTAGON_SCORE_NAMES, compute_pentagon_scores
-
-logger = logging.getLogger(__name__)
 
 # pentagon_scoring은 (30, 33, 3) 고정 윈도우를 기대한다 (PentagonConfig.expected_frames).
 # Notion "웹소켓 연결"/"추론" 문서의 DCA-Net v2 연동 설계(슬라이딩 윈도우 버퍼, 30프레임
@@ -34,7 +30,12 @@ def window_has_reference_seam(ref_indices: list[int], num_frames: int) -> bool:
     )
 
 
-def score_window(user_window: list[np.ndarray], ref_window: list[np.ndarray]) -> dict:
+def score_window(
+    user_window: list[np.ndarray],
+    ref_window: list[np.ndarray],
+    user_aspect_ratio: float = 1.0,
+    reference_aspect_ratio: float = 1.0,
+) -> dict:
     """최근 WINDOW_SIZE프레임(사용자/기준)으로 오각형 점수 1회 계산.
 
     호출 측(websocket.py)이 30프레임마다 asyncio.to_thread로 호출해 실시간 응답
@@ -43,6 +44,10 @@ def score_window(user_window: list[np.ndarray], ref_window: list[np.ndarray]) ->
     """
     user_seq = np.stack(user_window)
     idol_seq = np.stack(ref_window)
+    if user_aspect_ratio <= 0 or reference_aspect_ratio <= 0:
+        raise ValueError("aspect ratios must be positive")
+    user_seq[..., 0] *= user_aspect_ratio
+    idol_seq[..., 0] *= reference_aspect_ratio
     result = compute_pentagon_scores(user_seq, idol_seq)
     return {
         "final_score": round(result.final_score, 4),
