@@ -23,6 +23,22 @@ class Settings(BaseSettings):
     feedback_threshold_good: float = 0.80
     feedback_threshold_bad: float = 0.60
 
+    # 로컬 개발용 기준 안무. 배포에서는 S3 key를 REFERENCE_KEYPOINTS로 덮어쓴다.
+    reference_keypoints: dict[str, dict[str, int | str]] = {
+        "hollywood-action": {"video_id": 1, "keypoint_path": "data/references/hollywood-action.npy", "fps": 30},
+        "rude": {"video_id": 2, "keypoint_path": "data/references/rude.npy", "fps": 30},
+        "its-me": {"video_id": 3, "keypoint_path": "data/references/its-me.npy", "fps": 30},
+        "wda": {"video_id": 4, "keypoint_path": "data/references/wda.npy", "fps": 30},
+    }
+    # 개발/테스트 전용: BE 세션 없이 /ws/analyze?reference_id=<곡 ID>로 연결을 허용한다.
+    # 데모/배포의 기본 연결은 BE가 발급한 ws_token(/ws/analyze?token=...)이며,
+    # 이 값이 false(기본)면 reference_id 연결은 4001로 거부된다.
+    enable_reference_id_fallback: bool = False
+
+    dca_checkpoint_path: str = "artifacts/training-ranking/checkpoints/best.pt"
+    dca_device: str = "auto"
+    dca_normalize_input: bool = True
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

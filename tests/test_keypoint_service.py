@@ -1,7 +1,13 @@
 import numpy as np
+import pytest
 
 from app.config import settings
-from app.services.keypoint_service import KEYPOINT_DIM, NUM_LANDMARKS, compute_feedback
+from app.services.keypoint_service import (
+    KEYPOINT_DIM,
+    NUM_LANDMARKS,
+    compute_feedback,
+    load_reference_keypoints,
+)
 
 FPS = 30.0
 
@@ -124,6 +130,56 @@ def test_frame_idx_has_no_rounding_jitter_at_steady_30fps():
 
     diffs = [b - a for a, b in zip(frame_indices, frame_indices[1:])]
     assert all(d == 1 for d in diffs), f"프레임 인덱스가 1씩 증가하지 않음: {diffs[:20]}..."
+
+
+def test_feedback_aligns_to_the_nearest_matching_reference_frame():
+    reference = np.zeros((9, NUM_LANDMARKS, KEYPOINT_DIM), dtype=np.float32)
+    reference[3].fill(1.0)
+    reference[5].fill(-1.0)
+
+    # 재생 시점은 5번 프레임이지만, 사용자는 약 2프레임 늦은 3번 포즈를 하고 있다.
+    timestamp_ms = round(5 * 1000 / FPS)
+    result = compute_feedback(
+        reference,
+        reference[3],
+        frame_idx=0,
+        timestamp_ms=timestamp_ms,
+        fps=FPS,
+    )
+
+    assert result["frame_idx"] == 3
+    assert result["score"] > 0.99
+
+
+def test_feedback_ignores_camera_translation_and_body_scale():
+    pose = np.zeros((NUM_LANDMARKS, KEYPOINT_DIM), dtype=np.float32)
+    pose[11, 0] = -1.0
+    pose[12, 0] = 1.0
+    pose[23, 0] = -0.5
+    pose[24, 0] = 0.5
+    pose[15, 1] = 0.7
+    reference = np.repeat(pose[None, ...], 9, axis=0)
+
+    # 같은 포즈를 더 멀리서 찍고 카메라 위치가 달라도 만점에 가까워야 한다.
+    incoming = pose * 1.8 + np.array([4.0, -3.0, 0.5], dtype=np.float32)
+    result = compute_feedback(reference, incoming, frame_idx=0)
+
+    assert result["score"] > 0.99
+
+
+@pytest.mark.asyncio
+async def test_load_reference_keypoints_uses_an_existing_local_npy_before_redis(tmp_path):
+    reference = _make_reference(num_frames=2)
+    local_reference = tmp_path / "reference.npy"
+    np.save(local_reference, reference)
+
+    class RedisMustNotBeUsed:
+        async def get(self, _key):
+            raise AssertionError("local reference must be loaded before Redis")
+
+    loaded = await load_reference_keypoints(RedisMustNotBeUsed(), 1, str(local_reference))
+
+    assert np.array_equal(loaded, reference)
 
 
 # ── 아래부터는 채점 공식(코사인 유사도 + 골반너비 정규화 거리 감점) 자체를

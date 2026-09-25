@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import aioboto3
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 # MediaPipe Pose 기준: 33 landmarks × [x, y, z]
 NUM_LANDMARKS = 33
 KEYPOINT_DIM = 3
+# timestamp 기준 기대 프레임 앞뒤로 이 범위(±프레임) 안에서 가장 잘 맞는 기준
+# 프레임을 찾는다 (integration/ai-server-fe의 시간 정렬, 카메라/포즈 추론 지연 보정).
+TIME_ALIGNMENT_WINDOW_FRAMES = 6
 
 # MediaPipe Pose 왼쪽/오른쪽 골반 인덱스 — 자세 비교의 원점으로 사용
 _L_HIP = 23
@@ -213,7 +217,13 @@ async def load_reference_keypoints(
     video_id: int,
     keypoint_path: str,
 ) -> np.ndarray:
-    """Redis 캐시 우선, 없으면 S3에서 로드 후 캐시 저장"""
+    """로컬 개발 파일 우선, 그 외에는 Redis 캐시와 S3를 사용한다."""
+    local_path = Path(keypoint_path)
+    if local_path.is_file():
+        arr = np.load(local_path).astype(np.float32)
+        _validate_reference_shape(arr)
+        return arr
+
     cache_key = f"ref_kp:{video_id}"
     cached = await redis.get(cache_key)
 
@@ -273,7 +283,59 @@ def compute_feedback(
     if timestamp_ms is not None:
         frame_idx = round(timestamp_ms * fps / 1000) % num_frames
 
-    ref_frame = reference[frame_idx % num_frames]
+    # 2026-09-25 (integration/ai-server-session): integration/ai-server-fe의
+    # 시간 정렬(기대 프레임 ±TIME_ALIGNMENT_WINDOW_FRAMES 안에서 가장 잘 맞는
+    # 기준 프레임 선택)을 유지하되, 후보 프레임을 비교하는 기준은 아래
+    # _score_against_reference_frame(feature/ai-server PR #7의 채점: 관절 추적
+    # 유실 처리 + 관절별 가중 코사인 + 최악 관절 거리 감점)과 동일하게 쓴다.
+    # 정렬 기준과 최종 점수 기준이 같아야 "고른 프레임 = 실제로 가장 높은
+    # 점수를 받는 프레임"이 되고, 골반이 추적 안 된 프레임에서 정렬이 오염된
+    # 원점 기준으로 엉뚱한 프레임을 고르는 일도 막을 수 있다.
+    expected_frame_idx = frame_idx % num_frames
+    candidate_frame_indices = [expected_frame_idx]
+    for offset in range(1, TIME_ALIGNMENT_WINDOW_FRAMES + 1):
+        candidate_frame_indices.extend(
+            [
+                (expected_frame_idx - offset) % num_frames,
+                (expected_frame_idx + offset) % num_frames,
+            ]
+        )
+
+    # 카메라/포즈 추론 지연은 짧은 구간의 동작 시점 차이로 나타난다.
+    # 기준 시점을 먼저 넣어 동점인 정지 포즈에서는 원래 재생 위치를 유지한다.
+    candidate_results = {
+        candidate_idx: _score_against_reference_frame(reference[candidate_idx], incoming)
+        for candidate_idx in dict.fromkeys(candidate_frame_indices)
+    }
+    frame_idx = max(
+        candidate_frame_indices,
+        key=lambda candidate_idx: candidate_results[candidate_idx][0],
+    )
+    score, worst_joints = candidate_results[frame_idx]
+
+    feedback_text = _score_to_message(score)
+
+    return {
+        "type": "feedback",  # FE(use-ai-feedback-socket.ts)가 msg.type으로 메시지 종류를 구분함
+        "score": round(score, 4),
+        # 같은 문구를 두 필드명으로 보낸다: FE PR #5(RealtimeFeedback.feedback)와
+        # integration/ai-server-fe는 "feedback", feature/ai-server(PR #7)는 "message".
+        "feedback": feedback_text,
+        "message": feedback_text,
+        "frame_idx": frame_idx,
+        "worst_joints": worst_joints,  # 가장 틀린 관절 인덱스
+    }
+
+
+def _score_against_reference_frame(
+    ref_frame: np.ndarray, incoming: np.ndarray
+) -> tuple[float, list[int]]:
+    """기준 프레임 1개와 사용자 프레임 1개를 비교해 (score, worst_joints)를 반환한다.
+
+    feature/ai-server PR #7의 compute_feedback 채점 본문을 그대로 옮긴 것이다
+    (관절 추적 유실 처리, 원점 fallback, 관절별 가중 코사인, 최악 관절 거리 감점).
+    compute_feedback은 시간 정렬 후보 프레임마다 이 함수를 호출한다.
+    """
 
     # 2026-09-23: MediaPipe가 특정 관절을 못 잡으면(화면 밖으로 나감 등) 그
     # 관절만 (0,0,0)으로 오는 경우가 있다 — 실제 몸 좌표는 MediaPipe 정규화
@@ -451,15 +513,7 @@ def compute_feedback(
         worst_joint_penalty = 0.0
     score = max(-1.0, cos_sim - worst_joint_penalty)
 
-    feedback_text = _score_to_message(score)
-
-    return {
-        "type": "feedback",  # FE(use-ai-feedback-socket.ts)가 msg.type으로 메시지 종류를 구분함
-        "score": round(score, 4),
-        "message": feedback_text,  # FE의 FeedbackMessage.message 필드명에 맞춤 (구 필드명: feedback)
-        "frame_idx": frame_idx,
-        "worst_joints": worst_joints,  # 가장 틀린 관절 인덱스
-    }
+    return score, worst_joints
 
 
 def _score_to_message(score: float) -> str:

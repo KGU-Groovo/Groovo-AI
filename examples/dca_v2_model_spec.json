@@ -1,0 +1,52 @@
+{
+  "model_name": "Groovo DCA-Net v2 Prototype",
+  "model_version": "dca_v2_feature_diff_injection",
+  "frame_length": 30,
+  "num_joints": 33,
+  "coord_dim": 3,
+  "input_shapes": {
+    "idol_seq": [
+      30,
+      33,
+      3
+    ],
+    "user_seq": [
+      30,
+      33,
+      3
+    ],
+    "single_frame": [
+      33,
+      3
+    ]
+  },
+  "output_fields": [
+    "ready",
+    "score_100",
+    "color",
+    "status",
+    "highlight_joints",
+    "pred_joint_errors",
+    "frontend_payload"
+  ],
+  "color_rule": {
+    "green": "score_100 >= 80.0",
+    "orange": "60.0 <= score_100 < 80.0",
+    "red": "score_100 < 60.0"
+  },
+  "realtime_rule": {
+    "window_size": 30,
+    "first_ready_frame": 30,
+    "before_ready": "ready=False"
+  },
+  "checkpoint_path": "/content/drive/MyDrive/Groovo/groovo_dca_v2/checkpoints/dca_v2_best_model.pt",
+  "device": "cuda",
+  "num_parameters": 240016,
+  "num_trainable_parameters": 240016,
+  "limitations": [
+    "This model is trained on rule-based pseudo labels, not real human scores.",
+    "Scores should be treated as prototype feedback.",
+    "Service performance must be revalidated with real user dance data.",
+    "Color thresholds may need calibration for production."
+  ]
+}

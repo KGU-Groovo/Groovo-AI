@@ -5,6 +5,15 @@ import pytest
 import app.config as config_module
 
 
+def test_default_reference_keypoints_register_all_frontend_song_ids():
+    assert set(config_module.settings.reference_keypoints) == {
+        "hollywood-action",
+        "rude",
+        "its-me",
+        "wda",
+    }
+
+
 def test_production_with_default_jwt_secret_fails_fast(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", "change-me")
