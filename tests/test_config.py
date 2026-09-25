@@ -11,6 +11,7 @@ def test_default_reference_keypoints_register_all_frontend_song_ids():
         "rude",
         "its-me",
         "wda",
+        "bad",
     }
 
 

@@ -5,11 +5,17 @@ import numpy as np
 
 from generate_data import build_dataset_from_reference
 
+DEFAULT_POSE_MODEL = Path(__file__).resolve().parents[1] / "models" / "pose_landmarker_lite.task"
+
 
 def main():
     parser = argparse.ArgumentParser(description="댄스 영상에서 Groovo 학습용 NPZ를 만든다.")
     parser.add_argument("--video", required=True, help="기준 댄스 영상 경로")
-    parser.add_argument("--pose-model", help="MediaPipe Tasks 런타임에서만 필요한 .task 경로")
+    parser.add_argument(
+        "--pose-model",
+        default=str(DEFAULT_POSE_MODEL),
+        help="MediaPipe Tasks 런타임에서 사용할 .task 경로",
+    )
     parser.add_argument("--song-id", required=True, help="출력 파일 이름에 사용할 song ID")
     parser.add_argument("--output-dir", default="data", help="출력 디렉터리")
     parser.add_argument("--sample-every", type=int, default=1)

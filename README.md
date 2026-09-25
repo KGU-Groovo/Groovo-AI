@@ -3,7 +3,7 @@
 ## Create training data
 
 ```bash
-python src/create_dataset.py \
+python3 src/create_dataset.py \
   --video /path/to/dance.mp4 \
   --song-id hollywood-action
 ```
