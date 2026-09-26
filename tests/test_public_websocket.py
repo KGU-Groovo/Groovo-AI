@@ -58,6 +58,38 @@ def test_analyze_websocket_returns_pentagon_scores_after_30_valid_frames(monkeyp
     assert feedback["pentagon_scores"]["final_score"] == 90.0
 
 
+def test_analyze_websocket_discards_partial_window_while_body_is_not_visible(monkeypatch):
+    async def load_reference_keypoints(_redis, _video_id, _keypoint_path):
+        return np.ones((60, 33, 3), dtype=np.float32)
+
+    calls = 0
+
+    def score_window(_user, _reference):
+        nonlocal calls
+        calls += 1
+        return {"final_score": 91.2, "scores": {"accuracy": 90.0}}
+
+    monkeypatch.setattr(
+        settings,
+        "reference_keypoints",
+        {"hollywood-action": {"video_id": 1, "keypoint_path": "refs/hollywood.npy"}},
+    )
+    monkeypatch.setattr(websocket_router, "load_reference_keypoints", load_reference_keypoints)
+    monkeypatch.setattr(websocket_router, "score_window", score_window)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/analyze?reference_id=hollywood-action") as socket:
+            socket.receive_json()
+            for frame_idx in range(29):
+                socket.send_json({"keypoints": np.ones((33, 3)).tolist(), "frame_idx": frame_idx})
+                socket.receive_json()
+            socket.send_json({"body_visible": False})
+            socket.send_json({"keypoints": np.ones((33, 3)).tolist(), "frame_idx": 29})
+            socket.receive_json()
+
+    assert calls == 0
+
+
 def test_analyze_websocket_uses_dca_score_after_a_full_window(monkeypatch):
     class FakeDcaModel:
         def predict(self, reference_window, user_window):

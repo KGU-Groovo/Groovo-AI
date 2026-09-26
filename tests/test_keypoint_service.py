@@ -91,6 +91,19 @@ def test_feedback_aligns_to_the_nearest_matching_reference_frame():
     assert result["score"] > 0.99
 
 
+def test_feedback_echoes_playback_relative_timestamp():
+    timestamp_ms = 1234
+    result = compute_feedback(
+        _make_reference(num_frames=9),
+        _incoming(),
+        frame_idx=0,
+        timestamp_ms=timestamp_ms,
+        fps=FPS,
+    )
+
+    assert result["timestamp_ms"] == timestamp_ms
+
+
 def test_feedback_ignores_camera_translation_and_body_scale():
     pose = np.zeros((NUM_LANDMARKS, KEYPOINT_DIM), dtype=np.float32)
     pose[11, 0] = -1.0

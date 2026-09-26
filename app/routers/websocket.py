@@ -78,6 +78,7 @@ async def analyze_websocket(
     ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
     ref_idx_window: deque[int] = deque(maxlen=WINDOW_SIZE)
     processed_frame_count = 0
+    analysis_paused = False
     try:
         while True:
             try:
@@ -87,6 +88,8 @@ async def analyze_websocket(
                 await websocket.send_json({"error": "잘못된 JSON 형식입니다"})
                 continue
             except asyncio.TimeoutError:
+                if analysis_paused:
+                    continue
                 elapsed = asyncio.get_event_loop().time() - last_recv
                 if elapsed >= pause_sec:
                     # 10초 이상 수신 없음 → 일시정지 권고
@@ -116,6 +119,16 @@ async def analyze_websocket(
             last_recv = asyncio.get_event_loop().time()
             warn_sent = False
 
+            body_visible = message.get("body_visible")
+            if isinstance(body_visible, bool):
+                analysis_paused = not body_visible
+                if analysis_paused:
+                    user_kp_window.clear()
+                    ref_kp_window.clear()
+                    ref_idx_window.clear()
+                    processed_frame_count = 0
+                continue
+
             frame_idx: int = message.get("frame_idx", 0)
             timestamp_ms: int | None = message.get("timestamp_ms")
             camera_aspect_ratio = message.get("camera_aspect_ratio")
@@ -131,6 +144,8 @@ async def analyze_websocket(
             if raw_kp is None:
                 await websocket.send_json({"error": "keypoints 필드 누락"})
                 continue
+
+            analysis_paused = False
 
             # ragged 배열(관절마다 좌표 개수가 다른 경우)은 np.array 생성 자체에서
             # ValueError가 나고, 관절 개수가 다르면 compute_feedback의 np.dot에서 난다.

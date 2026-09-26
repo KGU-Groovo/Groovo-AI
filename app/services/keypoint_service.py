@@ -185,6 +185,7 @@ def compute_feedback(
         "score": round(cos_sim, 4),
         "feedback": feedback_text,
         "frame_idx": frame_idx,
+        "timestamp_ms": timestamp_ms,
         "worst_joints": worst_joints,  # 가장 틀린 관절 인덱스
     }
 
