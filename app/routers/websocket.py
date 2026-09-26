@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 
 _WARN_SEC = 3.0    # 경고 임계값: 3초 동안 수신 없으면 마지막 점수 유지 + 경고
 _PAUSE_SEC = 10.0  # 일시정지 권고 임계값: 10초
+_MAX_MESSAGE_BYTES = 64 * 1024
+_MAX_FRAMES_PER_SECOND = 30
+
+
+class MessageTooLargeError(Exception):
+    pass
+
+
+def accept_frame_in_window(
+    window_start: float, frame_count: int, now: float
+) -> tuple[float, int, bool]:
+    if now - window_start >= 1.0:
+        return now, 1, True
+    if frame_count >= _MAX_FRAMES_PER_SECOND:
+        return window_start, frame_count, False
+    return window_start, frame_count + 1, True
 
 
 @router.websocket("/ws/analyze")
@@ -74,6 +90,8 @@ async def analyze_websocket(
 
     last_feedback: dict | None = None
     last_recv = asyncio.get_event_loop().time()
+    frame_window_start = last_recv
+    frame_count = 0
     warn_sent = False
     user_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
     ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
@@ -88,6 +106,9 @@ async def analyze_websocket(
             except json.JSONDecodeError:
                 # 프레임 하나가 손상돼도 세션 전체를 끊지 않고 에러만 전달한다.
                 await websocket.send_json({"error": "잘못된 JSON 형식입니다"})
+                continue
+            except MessageTooLargeError:
+                await websocket.send_json({"error": "메시지 크기가 너무 큽니다"})
                 continue
             except asyncio.TimeoutError:
                 if analysis_paused:
@@ -169,6 +190,11 @@ async def analyze_websocket(
                     "error": f"keypoints shape이 올바르지 않습니다 (기대: [{NUM_LANDMARKS}, {KEYPOINT_DIM}])"
                 })
                 continue
+            frame_window_start, frame_count, accepted = accept_frame_in_window(
+                frame_window_start, frame_count, asyncio.get_event_loop().time()
+            )
+            if not accepted:
+                continue
             feedback = compute_feedback(
                 reference_kp,
                 incoming_kp,
@@ -228,4 +254,6 @@ async def _receive_one(websocket: WebSocket) -> dict | None:
         # 바이너리 프레임은 지원하지 않음 - JSONDecodeError와 동일하게 처리해
         # 세션을 끊지 않고 에러만 전달한다.
         raise json.JSONDecodeError("binary frame not supported", "", 0)
+    if len(text.encode("utf-8")) > _MAX_MESSAGE_BYTES:
+        raise MessageTooLargeError
     return json.loads(text)
