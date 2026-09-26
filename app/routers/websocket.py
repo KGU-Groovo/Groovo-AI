@@ -17,6 +17,7 @@ from app.services.keypoint_service import (
 )
 from app.services.pentagon_scoring_service import (
     WINDOW_SIZE,
+    aggregate_pentagon_results,
     score_window,
     window_has_reference_seam,
 )
@@ -77,6 +78,7 @@ async def analyze_websocket(
     user_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
     ref_kp_window: deque[np.ndarray] = deque(maxlen=WINDOW_SIZE)
     ref_idx_window: deque[int] = deque(maxlen=WINDOW_SIZE)
+    pentagon_results: list[dict] = []
     processed_frame_count = 0
     analysis_paused = False
     try:
@@ -118,6 +120,13 @@ async def analyze_websocket(
 
             last_recv = asyncio.get_event_loop().time()
             warn_sent = False
+
+            if message.get("type") == "complete":
+                await websocket.send_json({
+                    "type": "session_summary",
+                    "session_summary": aggregate_pentagon_results(pentagon_results),
+                })
+                continue
 
             body_visible = message.get("body_visible")
             if isinstance(body_visible, bool):
@@ -186,6 +195,7 @@ async def analyze_websocket(
                     feedback["pentagon_scores"] = await asyncio.to_thread(score_window, *score_args)
                     accuracy_score = feedback["pentagon_scores"]["scores"]["accuracy"]
                     feedback["pentagon_scores"]["final_score"] = accuracy_score
+                    pentagon_results.append(feedback["pentagon_scores"])
                     feedback["score"] = accuracy_score / 100.0
                 except Exception:
                     logger.exception("pentagon 채점 실패: reference_id=%s", reference_id)

@@ -58,6 +58,58 @@ def test_analyze_websocket_returns_pentagon_scores_after_30_valid_frames(monkeyp
     assert feedback["pentagon_scores"]["final_score"] == 90.0
 
 
+def test_analyze_websocket_returns_aggregated_summary_when_session_completes(monkeypatch):
+    async def load_reference_keypoints(_redis, _video_id, _keypoint_path):
+        return np.ones((90, 33, 3), dtype=np.float32)
+
+    scores = iter([80.0, 100.0])
+
+    def score_window(_user, _reference):
+        score = next(scores)
+        return {
+            "final_score": score,
+            "scores": {
+                "timing": score,
+                "balance": score,
+                "rhythm": score,
+                "detail": score,
+                "accuracy": score,
+            },
+        }
+
+    monkeypatch.setattr(
+        settings,
+        "reference_keypoints",
+        {"hollywood-action": {"video_id": 1, "keypoint_path": "refs/hollywood.npy"}},
+    )
+    monkeypatch.setattr(websocket_router, "load_reference_keypoints", load_reference_keypoints)
+    monkeypatch.setattr(websocket_router, "score_window", score_window)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/analyze?reference_id=hollywood-action") as socket:
+            socket.receive_json()
+            for frame_idx in range(60):
+                socket.send_json({"keypoints": np.ones((33, 3)).tolist(), "frame_idx": frame_idx})
+                socket.receive_json()
+            socket.send_json({"type": "complete"})
+            summary = socket.receive_json()
+
+    assert summary == {
+        "type": "session_summary",
+        "session_summary": {
+            "final_score": 90.0,
+            "scores": {
+                "timing": 90.0,
+                "balance": 90.0,
+                "rhythm": 90.0,
+                "detail": 90.0,
+                "accuracy": 90.0,
+            },
+            "window_count": 2,
+        },
+    }
+
+
 def test_analyze_websocket_discards_partial_window_while_body_is_not_visible(monkeypatch):
     async def load_reference_keypoints(_redis, _video_id, _keypoint_path):
         return np.ones((60, 33, 3), dtype=np.float32)
